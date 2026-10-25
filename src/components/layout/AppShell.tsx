@@ -35,7 +35,7 @@ export function AppShell() {
             <FlaskConical size={14} />
           </span>
           <span>
-            阶段二实时链路：环境与人流数据来自 MQTT 模拟器实时推送，天气来自心知 API；
+            阶段二实时链路：环境与人流数据来自 MQTT 模拟器实时推送，天气来自高德 API；
             事件、处置与恢复全部由真实交互驱动。
           </span>
           <span className="demo-strip__meta">

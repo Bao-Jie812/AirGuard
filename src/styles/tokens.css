@@ -1,36 +1,36 @@
 :root {
   color-scheme: light;
-  --bg: #edf3f2;
-  --bg-deep: #e2ecea;
+  --bg: #edf2f4;
+  --bg-deep: #e4ecee;
   --surface: #ffffff;
-  --surface-soft: #f6f9f8;
-  --surface-muted: #eef4f2;
-  --surface-strong: #e3edea;
-  --border: #e2ebe8;
-  --border-strong: #cfdeda;
-  --text: #16302b;
-  --text-2: #4f6762;
-  --text-3: #7f958f;
+  --surface-soft: #f5f9f9;
+  --surface-muted: #edf3f3;
+  --surface-strong: #e2eded;
+  --border: #dfe9e9;
+  --border-strong: #cbdcdd;
+  --text: #19353a;
+  --text-2: #50696d;
+  --text-3: #70878a;
   --text-inverse: #ffffff;
-  --primary: #0d9b86;
-  --primary-hover: #0a8572;
-  --primary-soft: #e2f3ef;
-  --primary-border: #bce0d8;
-  --teal: #0d9b86;
-  --teal-soft: #e2f3ef;
-  --teal-border: #bce0d8;
-  --amber: #c98a1e;
-  --amber-soft: #fbf3df;
-  --amber-border: #eedcae;
-  --danger: #d96a55;
-  --danger-soft: #fbeeea;
-  --danger-border: #f0d2c9;
-  --success: #2e8b6a;
-  --success-soft: #e6f4ee;
-  --success-border: #c3e4d5;
-  --info: #4a7fa5;
-  --info-soft: #ecf3f8;
-  --info-border: #cfe1ee;
+  --primary: #247c80;
+  --primary-hover: #1c686c;
+  --primary-soft: #e5f2f1;
+  --primary-border: #bddbd8;
+  --teal: #247c80;
+  --teal-soft: #e5f2f1;
+  --teal-border: #bddbd8;
+  --amber: #886426;
+  --amber-soft: #f9f3e5;
+  --amber-border: #ead9b5;
+  --danger: #ab5150;
+  --danger-soft: #f9eeee;
+  --danger-border: #ebcfce;
+  --success: #286e5a;
+  --success-soft: #e8f4ee;
+  --success-border: #c5e3d3;
+  --info: #466f8b;
+  --info-soft: #edf3f7;
+  --info-border: #cbdde9;
   --violet: #6c6893;
   --violet-soft: #f1f0f8;
   --violet-border: #dedbef;
@@ -43,9 +43,9 @@
   --radius-lg: 20px;
   --radius-xl: 26px;
 
-  --shadow-xs: 0 1px 2px rgba(22, 48, 43, 0.04);
-  --shadow-sm: 0 12px 32px -24px rgba(22, 48, 43, 0.25);
-  --shadow-md: 0 26px 60px -38px rgba(22, 48, 43, 0.35);
+  --shadow-xs: 0 2px 12px -8px rgba(28, 67, 75, 0.18);
+  --shadow-sm: 0 16px 34px -24px rgba(28, 67, 75, 0.26);
+  --shadow-md: 0 25px 54px -36px rgba(28, 67, 75, 0.32);
   --shadow-pop: 0 34px 84px -38px rgba(22, 48, 43, 0.4);
 
   --sidebar-width: 252px;
@@ -82,12 +82,9 @@ body {
   line-height: 1.55;
   color: var(--text);
   background:
-    radial-gradient(
-      1100px 520px at 92% -8%,
-      rgba(13, 155, 134, 0.09),
-      transparent 60%
-    ),
-    linear-gradient(180deg, #f1f6f5 0%, #eaf1ef 100%);
+    radial-gradient(950px 550px at 90% -8%, rgba(93, 147, 159, 0.12), transparent 65%),
+    radial-gradient(760px 640px at -12% 74%, rgba(144, 181, 177, 0.09), transparent 72%),
+    linear-gradient(160deg, #f3f7f8 0%, #eaf1f1 100%);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

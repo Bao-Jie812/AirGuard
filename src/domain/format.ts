@@ -26,6 +26,14 @@ const timeFormatter = new Intl.DateTimeFormat('zh-CN', {
   hour12: false,
 })
 
+const timeWithSecondsFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: APP_TIMEZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
   timeZone: APP_TIMEZONE,
   year: 'numeric',
@@ -51,6 +59,10 @@ export function formatDate(iso: string): string {
 
 export function formatTimeFromMs(ts: number): string {
   return timeFormatter.format(new Date(ts))
+}
+
+export function formatTimeWithSecondsFromMs(ts: number): string {
+  return timeWithSecondsFormatter.format(new Date(ts))
 }
 
 export function formatDateTimeFromMs(ts: number): string {

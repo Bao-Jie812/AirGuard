@@ -90,10 +90,11 @@ kbd {
   text-decoration: none;
   user-select: none;
   transition:
-    background 0.18s var(--ease),
-    border-color 0.18s var(--ease),
-    color 0.18s var(--ease),
-    box-shadow 0.18s var(--ease);
+    background 0.2s var(--ease),
+    border-color 0.2s var(--ease),
+    color 0.2s var(--ease),
+    box-shadow 0.24s var(--ease),
+    transform 0.24s var(--ease);
 }
 
 .button--sm {
@@ -191,8 +192,10 @@ kbd {
   border: 1px solid transparent;
   color: var(--text-2);
   transition:
-    background 0.16s var(--ease),
-    color 0.16s var(--ease);
+    background 0.2s var(--ease),
+    color 0.2s var(--ease),
+    box-shadow 0.24s var(--ease),
+    transform 0.24s var(--ease);
 }
 
 .icon-button:hover {
@@ -301,10 +304,13 @@ kbd {
 /* ---------- Cards ---------- */
 
 .card {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  /* 白底占主导，轻透出背景色而不牺牲数据可读性 */
+  background: rgba(255, 255, 255, 0.88);
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+  backdrop-filter: blur(12px) saturate(112%);
+  border: 1px solid rgba(213, 228, 229, 0.88);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-xs);
+  box-shadow: 0 2px 3px rgba(35, 77, 84, 0.025), 0 14px 38px -30px rgba(35, 77, 84, 0.28);
   overflow: hidden;
 }
 
@@ -363,9 +369,10 @@ kbd {
   padding: 14px 16px 13px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background:
-    linear-gradient(140deg, rgba(255, 255, 255, 0.96), rgba(250, 252, 253, 0.94));
-  box-shadow: var(--shadow-xs);
+  background: linear-gradient(140deg, rgba(255, 255, 255, 0.94), rgba(247, 251, 251, 0.82));
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+  backdrop-filter: blur(12px) saturate(112%);
+  box-shadow: 0 2px 3px rgba(35, 77, 84, 0.025), 0 14px 38px -30px rgba(35, 77, 84, 0.28);
   overflow: hidden;
 }
 
@@ -470,21 +477,22 @@ kbd {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--primary);
-  transition: width 0.4s var(--ease);
+  background: linear-gradient(90deg, #76aca9, var(--primary));
+  box-shadow: 0 0 5px rgba(36, 124, 128, 0.13);
+  transition: width 0.48s var(--ease);
 }
 
 .progress--success .progress__fill {
-  background: #6da58f;
+  background: linear-gradient(90deg, #91c4aa, #4c9279);
 }
 .progress--warning .progress__fill {
-  background: #c69a51;
+  background: linear-gradient(90deg, #dfc18d, #b98a43);
 }
 .progress--danger .progress__fill {
-  background: #bd6f61;
+  background: linear-gradient(90deg, #dca59a, #b96661);
 }
 .progress--info .progress__fill {
-  background: #6d94b2;
+  background: linear-gradient(90deg, #aac5d5, #6e95ad);
 }
 
 /* ---------- Notices ---------- */
@@ -823,8 +831,10 @@ kbd {
   color: var(--text-2);
   font-size: 11px;
   transition:
-    background 0.16s var(--ease),
-    border-color 0.16s var(--ease);
+    background 0.2s var(--ease),
+    border-color 0.2s var(--ease),
+    box-shadow 0.24s var(--ease),
+    transform 0.24s var(--ease);
 }
 
 .filter-toggle:hover {
@@ -1433,6 +1443,20 @@ kbd {
   background: var(--surface-muted);
   color: var(--text-3);
   font-size: 9px;
+}
+
+/* 仅有悬停能力的设备抬升操作项；数据卡本身不伪装成按钮 */
+@media (hover: hover) and (pointer: fine) {
+  .button:not(:disabled):hover,
+  .icon-button:not(:disabled):hover,
+  .filter-toggle:not(:disabled):hover {
+    transform: translateY(-2px) scale(1.015);
+    box-shadow: 0 10px 23px -16px rgba(36, 94, 102, 0.3);
+  }
+  .button--primary:not(:disabled):hover,
+  .button--danger:not(:disabled):hover {
+    box-shadow: 0 12px 24px -14px rgba(31, 86, 93, 0.42);
+  }
 }
 
 @media (max-width: 1100px) {

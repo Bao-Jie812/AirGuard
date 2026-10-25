@@ -16,7 +16,8 @@ import { METRIC_META, ZONE_COLORS } from '../../domain/constants'
 import {
   formatDateTimeFromMs,
   formatNumber,
-  formatTime,
+  formatTimeFromMs,
+  formatTimeWithSecondsFromMs,
 } from '../../domain/format'
 import { metricStatus } from '../../domain/priority'
 import {
@@ -66,17 +67,31 @@ function toRows(points: LivePoint[]): BoardRow[] {
   }))
 }
 
-function BoardChart({
+/** X 轴跨度小于该值时，刻度精确到秒，避免短窗口内相邻刻度显示同一分钟 */
+const SECOND_TICK_SPAN_MS = 5 * 60 * 1000
+
+/**
+ * 单指标趋势图：Y 轴按数据区间自适应（±8%），波动占满图面。
+ * Web 端 LiveBoard 与 H5 现场端（H5TrendChart）共用同一组件，
+ * 两端渲染逻辑 100% 一致。
+ */
+export function BoardChart({
   rows,
   metric,
   color,
+  className = 'live-board__chart',
 }: {
   rows: ChartSeriesPoint[]
   metric: MetricKey
   color: string
+  /** 容器类名：H5 端传入自定义类覆盖高度（默认 220px） */
+  className?: string
 }) {
   const meta = METRIC_META[metric]
   const gradientId = `live-board-gradient-${metric}`
+  const firstTs = rows[0]?.ts ?? 0
+  const lastTs = rows[rows.length - 1]?.ts ?? 0
+  const spanMs = lastTs - firstTs
   const values = rows
     .map((row) => row[metric])
     .filter((value): value is number => value !== null)
@@ -85,7 +100,7 @@ function BoardChart({
   // 警戒阈值线只在落入可视区间时绘制，避免误导
   const showAlertLine = meta.alert >= min * 0.92 && meta.alert <= max * 1.08
   return (
-    <div className="live-board__chart">
+    <div className={className}>
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart
           data={rows}
@@ -107,7 +122,9 @@ function BoardChart({
             type="number"
             domain={['dataMin', 'dataMax']}
             tickFormatter={(value) =>
-              formatTime(new Date(Number(value)).toISOString())
+              spanMs < SECOND_TICK_SPAN_MS
+                ? formatTimeWithSecondsFromMs(Number(value))
+                : formatTimeFromMs(Number(value))
             }
             tick={{ fontSize: 10, fill: '#7a8b98' }}
             tickLine={false}

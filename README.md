@@ -1,174 +1,229 @@
-# AirGuard · 多区域环境与人流智能分析
+# AirGuard · 多区域环境与人流智能分析系统
 
-阶段一前端原型。一个统一 Web 工作台，覆盖 **Overview / History / Evidence / Event-Action-Re-evaluate / Run Trace**，并配套 2.5D 空间地图和现场 H5 只读预览。
+> 🌿 让校园多区域监测从「看到指标」走向「知道先看哪里、为什么、处置后是否真的改善」。
 
-> **阶段一数据边界**：全部业务数据均为本地模拟。未连接真实传感器、MQTT、外部 API、RAG 服务、LLM 或真实机器学习模型。Camera 拍照与 TTS / ASR 尚未实现，相关入口在界面中明确标注“阶段二”。
+AirGuard 是基于 **React + TypeScript + MQTT** 的校园环境与人流监测工作台。系统通过 MQTT 接收宿舍、教学区、食堂三个区域的模拟实时数据，以 **Three.js / React Three Fiber** 构建可交互的校园 3D 场景，并在 Web 大屏与 H5 现场端同步展示环境指标、关注优先级和事件状态。规则阈值与浏览器端 **Z-score 滑动窗口异常检测**并列对照；高德天气作为独立的室外参考证据，失效时不阻断室内业务链。
 
-## 已确认的范围决策（2026-10-19）
+**一句话体验路径：** 区域总览 → 找到 Priority 最高的区域及原因 → 查看趋势与证据 → 记录 Action → 等待后续样本验证 Recovery → 回查 Run Trace。
 
-- **仓库工作流**：`airguard-draft` 为私有草稿仓库，持续接收开发记录；`airguard-competition` 为公开正式仓库，只接收审核通过、确认完成的发布快照，不镜像草稿历史。
-- **ASR**：纳入项目范围，与 TTS 分开验收；当前阶段尚未实现。
-- **机器学习**：按最高标准实施，包含真实训练、时间序列防泄漏划分、Rule 基线对照、评估指标、模型保存 / 重载 / 版本、错误案例与固定测试。当前阶段只有明确标注的占位输出。
-- **外部证据与知识库**：纳入范围。正式实现必须支持真实 Web API / RAG 链路，并保留固定证据快照回放以保证可重复验证。
-- **最终验收**：接受 S1–S5、系统级 Failure 调试、Regression、完整 `run_id` 回查与独立复现的检查清单。
-- **B01–B08**：已获得统一定义，能力映射见 [docs/b01_b08_increment_map.md](docs/b01_b08_increment_map.md)。
+> **数据声明：** 当前 MQTT 数据由 `simulator.js` 生成，属于演示数据，不代表真实校园传感器结果；地图是校园空间示意，不使用真实地理坐标。本文介绍的是仓库内已经实现的功能，不将案例书的 V1.0 目标误写成当前完成情况。
 
-## 快速启动
+## ✨ 核心亮点
 
-环境要求：Node.js 20+（本次验证使用 Node v24.21.0 / npm 11.19.0）。
+| 能力 | 当前实现 | 价值 |
+| --- | --- | --- |
+| 🔄 双数据链 | **实时链：** `simulator.js` → MQTT/JSON → 共享前端状态 → Web 工作台、H5 与 3D 场景；**离线链：** CSV → Python → `report.html` | 实时处置与离线复盘各有入口；报告可用指定 CSV 重新生成 |
+| 🏫 空间联动 | 三个 `zoneId` 对应不同楼栋；3D 建筑和 2D 示意图响应实时状态、未关闭事件和区域选择 | 让异常、Priority 与事件在空间中可见 |
+| 📊 可解释 Priority | 当前 PM2.5、CO₂、人流密度、历史趋势、持续时间及未关闭事件共同参与排序，并显示因子贡献 | 回答「为什么现在先关注这里」，而非只给出神秘分数 |
+| ⚖️ 规则 / 轻量 ML 对照 | 固定阈值与 Z-score 滑动窗口统计并列；规则正常但统计异常 → 建议复核，规则异常但统计正常 → 保留规则警示 | 不用一个模型结论覆盖已确认的业务事实 |
+| 🧩 可信降级 | 南京市高德天气实况请求失败时显示 `TIMEOUT` / `ERROR` 和原因 | 室外证据不可用 ≠ 室内状态异常，也不影响 MQTT、Priority 与事件链 |
+| 🔁 Event → Action → Recovery | MQTT 越限读数可创建事件；Web / H5 记录处置；只接受 Action 后的新样本，并要求连续两组满足规则才确认恢复 | 证明「已经处置」不等于「已经恢复」 |
+| 📷 现场佐证 | Web / H5 拍照留档生成“人工观察”证据，压缩照片经 MQTT 同步（在线时） | 照片提供现场佐证，不替代传感器事实 |
+
+### 系统数据流
+
+```text
+实时链：模拟器 ──MQTT/TCP──> 公共 Broker ──MQTT/WebSocket──> 浏览器共享状态
+                                                        ├── Web 总览 / 趋势 / 证据
+                                                        ├── 3D 校园空间 / 2D 示意图
+                                                        └── H5 现场查看与处置
+
+离线链：CSV ──> analyze_report.py ──> 趋势、摘要、事件时间线 ──> report.html
+```
+
+实时链和离线链属于**同一项目的两条处理路径**，当前离线脚本**不会自动导出 MQTT 历史**；要分析采集数据，请先提供符合字段要求的 CSV。
+
+## 🧰 技术栈
+
+| 层级 | 技术 |
+| --- | --- |
+| 前端 | React 19、TypeScript、Vite 8、React Router、CSS |
+| 实时消息 | MQTT.js、MQTT over WebSocket（浏览器）/ MQTT over TCP（模拟器） |
+| 空间与图表 | Three.js、React Three Fiber、Drei、Recharts |
+| 离线分析 | Python 3、NumPy、pandas、Matplotlib，输出单文件 HTML 报告 |
+| 外部证据 | 高德开放平台天气 Web 服务 API（南京市实时天气） |
+| 本地状态 | 浏览器 `localStorage` 保存实时历史、事件、Action 与运行记录；照片只在当前会话内保存 |
+
+## 🚀 环境准备与快速启动
+
+### 1. 安装环境与依赖
+
+- **Node.js：推荐 22.12.0 或更新版本。**&#8203; 当前使用的 Vite 8.3.4 要求 `^20.19.0 || >=22.12.0`；Node 18 和更早版本不适用。
+- npm 随 Node.js 安装；离线分析另需 Python 3 与 `numpy`、`pandas`、`matplotlib`。
+- 需要能访问 MQTT Broker；若使用天气功能，还需能访问高德天气接口。
+
+在项目根目录执行：
 
 ```bash
+node --version
+npm --version
 npm install
+```
+
+已有 `package-lock.json` 时也可使用 `npm ci` 做锁定依赖安装。
+
+### 2. 配置高德天气 Key（重要）
+
+在**项目根目录**（与 `package.json` 同级）手动创建 `.env` 文件，填入你在[高德开放平台](https://lbs.amap.com/)申请的 **Web 服务 Key**：
+
+```dotenv
+VITE_AMAP_KEY=请替换为你自己的高德Web服务Key
+```
+
+- 当前天气接口为 `https://restapi.amap.com/v3/weather/weatherInfo`，查询南京市实况（城市代码 `320100`）。
+- `.env` 已被 `.gitignore` 忽略，**不要把真实 Key 提交到 GitHub**；修改 `.env` 后必须重启 Vite 开发服务。
+- `VITE_` 变量会被打包进浏览器代码，**并非真正保密**：请按高德平台说明限制 Key 的使用范围；若用于公开部署，应改为后端代理并做好访问控制。
+- 没有 Key 也可以运行核心 MQTT、3D、Priority 与事件功能；天气证据会显示 `ERROR` 并解释降级原因。
+
+### 3. 启动 Web 前端（终端 A）
+
+```bash
 npm run dev
 ```
 
-打开终端提示的地址，默认是 <http://localhost:5173>。
+打开终端显示的地址，通常为 <http://localhost:5173/>；工作台默认进入 `/overview`。现场端地址为 <http://localhost:5173/m>（端口以实际终端输出为准）。
 
-其他命令：
+### 4. 启动 MQTT 数据模拟器（终端 B）
+
+在**同一项目根目录**另开终端，保持前端运行，然后执行：
+
+```bash
+node simulator.js
+# 等价命令：npm run simulator
+```
+
+连接成功后，终端会显示 `connected to mqtt://broker.emqx.io:1883`；默认每 **5 秒**向 `airguard/sensor/zone-n`、`zone-s`、`zone-w` 分别发布一条 JSON。刷新 Web / H5 页面后，应看到 MQTT 已连接、三区域指标与趋势图更新，3D 楼栋状态随实时数据变化。
+
+> 模拟器默认使用公共 Broker `broker.emqx.io:1883`；浏览器使用 `ws://broker.emqx.io:8083/mqtt`。两端必须连到**同一个 Broker**。当前浏览器连接地址写在 `src/services/mqttClient.ts`，模拟器可通过环境变量 `MQTT_BROKER_URL` 改地址；只改模拟器一侧会导致两端不通。公共 Broker 仅用于演示，不要传输真实个人信息或敏感现场照片。
+
+**一条典型传感器消息**（示例值；实际内容以模拟器输出为准）：
+
+```json
+{
+  "zoneId": "zone-w",
+  "pm25": 28,
+  "co2": 740,
+  "crowdLevel": 0.36,
+  "status": "NORMAL",
+  "time": "2026-10-25T06:00:00.000Z"
+}
+```
+
+`crowdLevel` 在**当前代码中是人流密度（人/㎡）**&#8203;，不是 C02 原任务书示例的 0–3 离散拥挤等级。客户端依据数值重新计算 `status`，不会盲信报文中的状态字段；相关阈值以 `src/domain/constants.ts` 和 `simulator.js` 为准。阈值只用于演示，不是公共卫生或健康诊断标准。
+
+### 5. 复现异常 → 处置 → 恢复（推荐演示）
+
+1. 打开 `/overview`，在“演示控制”点击**触发食堂异常**；浏览器向 `airguard/control` 发送指令，模拟器收到后立即发布异常读数。仅点击按钮本身**不会**在前端伪造事件。
+2. 查看实时图表、Priority、地图告警和新建的 `OPEN` 事件；打开事件详情，或在 `/m` 的“处置”页记录 Action，事件进入 `HANDLING`。
+3. 模拟器随后逐步回落。系统收集 `action_at` **之后**的有效 MQTT 样本；若尚未连续两组符合恢复规则，保持处理中 / 未恢复；达到事件定义的连续两组恢复条件后才进入 `RECOVERED`。
+4. 需要重演时，可用演示控制的“一键恢复正常”让模拟器改发正常数据；这只是**恢复模拟输入**，不等于直接强制将事件标记为 `RECOVERED`。如需保存一次明确的重新评估结果，可在事件详情触发 Recovery 重新评估并进入 `/runs` 查看 `run_id`。
+
+> 浏览器端历史和部分业务状态存于 `localStorage`，重开页面可回看；不同浏览器的本地历史**不是共享数据库**。现场联动依赖 MQTT 消息，不要把该演示形态描述为已完成服务端持久化。
+
+### 6. 可选：生成 Python 离线分析报告
+
+准备 Python 环境并安装依赖。建议将虚拟环境创建在**项目目录外**，避免意外把依赖文件提交到 GitHub。在 Windows（PowerShell / Git Bash）中可执行：
+
+```bash
+python -m venv ../airguard-report-venv
+../airguard-report-venv/Scripts/python.exe -m pip install numpy pandas matplotlib
+../airguard-report-venv/Scripts/python.exe analyze_report.py
+```
+
+在 macOS / Linux 中，将以上解释器路径替换为 `../airguard-report-venv/bin/python`，创建环境时可使用 `python3 -m venv ../airguard-report-venv`。下文的 `python` 指已激活上述环境的解释器；未激活时请使用虚拟环境中的 Python 完整路径。
+
+默认优先读取项目根目录的 `sensor_export.csv`；如果没有，则**生成或复用** `sensor_export_simulated.csv`，并在根目录生成 `report.html`。在浏览器打开 `report.html` 可查看三区域摘要、PM2.5 / CO₂ 趋势及由数据派生的越限时间线。
+
+要验证“换一份数据，报告能重算”，请显式指定 CSV：
+
+```bash
+python analyze_report.py --csv my_export.csv --out report.html
+```
+
+CSV 最少包含 `ts,zone_id,pm25,co2`，建议再包含 `crowd_level`；`zone_id` 取 `zone-n` / `zone-s` / `zone-w`。默认自动生成的模拟报告与实时 MQTT **不是同一次采集记录**，不要混称为实时导出结果。
+
+## 🗂️ 项目目录
+
+```text
+AirGuard/
+├── src/
+│   ├── components/
+│   │   ├── charts/           # Recharts 实时/历史趋势组件
+│   │   ├── domain/           # 3D 校园、2D 地图、Priority、证据及业务卡片
+│   │   ├── layout/           # Web 工作台侧栏、顶部导航
+│   │   └── ui/               # 通用按钮、标签、卡片与交互组件
+│   ├── pages/                # Overview、History、Evidence、Events、Runs、Map、H5
+│   ├── services/             # MQTT 客户端、天气请求、图片压缩
+│   ├── state/                # 实时数据、事件状态、浏览器持久化与通知
+│   ├── domain/               # Priority、Recovery、Z-score、阈值及图表数据处理
+│   ├── data/                 # 区域、业务类型、演示证据与种子数据
+│   └── styles/               # 全局变量与 Web / H5 样式
+├── simulator.js              # MQTT 三区域实时数据与异常/恢复指令模拟器
+├── analyze_report.py         # CSV → Python 统计与可复现 HTML 报告
+├── report.html               # 离线报告示例 / 重新运行后的输出
+├── docs/                     # 阶段性说明及截图（部分旧文档记录早期原型）
+└── package.json              # 前端依赖及脚本
+```
+
+## 🧭 页面与业务边界
+
+| 地址 | 内容 |
+| --- | --- |
+| `/overview` | 区域总览、可解释 Priority、3D 态势、实时大屏与证据健康 |
+| `/history` | MQTT 历史趋势及 Event / Action 时间线 |
+| `/evidence` | 当前事实、历史、规则、Z-score、天气、演示知识引用与人工观察 |
+| `/events`、`/events/:eventId` | 事件列表、处置 Action、后验样本与恢复复核 |
+| `/runs`、`/runs/:runId` | 已保存的运行快照和可回查分析记录 |
+| `/map` | 交互式校园 3D 空间 / 2D 示意 |
+| `/m` | H5 现场查看、事件处置与拍照留档 |
+
+**哪些是演示、哪些是真实接入：** MQTT 传输和高德 HTTP 请求是真实网络调用，但 MQTT 观测值来自模拟器；Z-score 是浏览器内统计检测，**尚无训练 / 测试 / 模型文件保存与重载流程**；知识引用目前是静态演示条目，不是在线 RAG 检索；Run Trace 包含演示快照与本地运行记录，不等同于已建成数据库或完整后端 Tool Trace。S03-B 案例书要求的完整 S1–S5、B01–B08 验收证据应单独核验，不能仅凭现有页面宣称全部通过。
+
+## 🧪 检查与构建
 
 ```bash
 npm run typecheck   # TypeScript 类型检查
-npm run build       # 类型检查 + 生产构建，输出 dist/
-npm run preview     # 本地预览生产构建
-npm run lint        # Oxlint
+npm run lint        # Oxlint 静态检查
+npm run build       # 类型检查 + Vite 生产构建，产物在 dist/
+npm run preview     # 本地预览已构建版本
 ```
 
-> 应用使用 `BrowserRouter`。若部署到静态服务器，需要把未知路径回退到 `index.html`，否则刷新子路由会 404。
+应用使用 `BrowserRouter`；部署到静态服务器时，应配置未知路径回退至 `index.html`，否则刷新 `/m` 等子路由可能返回 404。HTTPS 页面不能直接连接当前硬编码的 `ws://` 地址；公开部署需要提供与页面协议兼容的安全 WebSocket 接入并相应修改客户端配置。
 
-## 页面路由
+## ❓ 常见问题（FAQ）
 
-| 路由 | 视图 | 主要作用 |
-| --- | --- | --- |
-| `/overview` | 区域总览 | 多区域指标、Priority 排序、首要关注区、证据健康、事件与运行入口 |
-| `/history` | 历史趋势 | 区域指标趋势、异常持续时间、Event / Action / Recovery 时间标记、Action 前后均值对比 |
-| `/evidence` | 证据与知识 | Current、History、External、RAG、Rule、ML、人工观察；来源、状态、有效期、限制、证据分歧 |
-| `/events` | 事件与处置 | 事件筛选与状态概览 |
-| `/events/:eventId` | 事件详情 | 记录 Action、查看 Action 后验样本、执行 Recovery 重新评估、查看证据失败与关联运行 |
-| `/runs` | Run Trace | 运行快照列表、场景与状态筛选 |
-| `/runs/:runId` | Run Trace 详情 | 输入、证据、工具调用、Rule / ML、解释、失败记录、版本与最终输出 |
-| `/map` | 空间地图 | 2.5D 空间示意、Priority 队列、未关闭事件标记，点击区域查看详情入口 |
-| `/m` | 现场 H5 | 同一业务状态的移动端只读预览；Camera / TTS 明确未实现 |
+<details>
+<summary><strong>MQTT 一直显示离线或“重连中”，怎么排查？</strong></summary>
 
-## 阶段一已实现
+1. 确认前端和 `node simulator.js` **两个进程都在运行**，模拟器终端出现 `connected to ...` 及周期性发布日志。
+2. 浏览器开发者工具检查 WebSocket 连接；本地前端使用 `ws://broker.emqx.io:8083/mqtt`，模拟器使用 `mqtt://broker.emqx.io:1883`。检查网络 / 防火墙是否允许相应端口，公共 Broker 是否可用。
+3. 确保 Web 与模拟器使用同一 Broker、同一组 `airguard/sensor/...` Topic；如果更换 Broker，浏览器 URL 与模拟器 URL 都要调整。
+4. 若页面通过 HTTPS 打开，`ws://` 会被浏览器拦截；本地先用 `http://localhost:5173` 验证，正式部署改用可用的 `wss://` 服务。
+5. “已连接”只说明浏览器连上 Broker；**看不到数据**还要检查模拟器是否正在发布、订阅 Topic 是否一致。连接恢复后等待下一轮约 5 秒的采样。
 
-- 统一侧边栏与顶部导航，桌面、平板与移动端响应式布局。
-- 统一 zone / event / run / sample / evidence 数据模型与 `zone_id`、`event_id`、`run_id` 关联。
-- 可见的数据来源区分：`SIMULATED`、`PUBLIC`、`MANUAL_OBSERVATION`、`MODEL_OUTPUT`。
-- 可解释的 Priority 规则：当前指标 + 人流 + 1 小时变化 + 持续异常时间；可展开因子贡献。
-- 6 个区域、3 个种子事件、2 条 Action、10 组后验样本、4 条种子 Run Trace。
-- Action 记录表单与本地持久化；只登记处置，不直接改变 Recovery。
-- Recovery 规则执行与结果 UI：`PM2.5 ≤ 75 μg/m³`、`CO₂ ≤ 1000 ppm`、`人流密度 ≤ 0.8 人/㎡`，要求最新 Action 之后连续 2 组有效样本。
-- 本地重新评估会生成新的 `run_id` 并持久化；历史 Run Trace 只读取快照，不重新计算。
-- Evidence 失败 / 过期 / 缺失 / 超时状态；证据冲突面板；工具失败与业务状态分离。
-- 数据持久化到 `localStorage`（键名 `airguard.phase1.store`），顶部“重置演示”可恢复初始种子状态。
-- 加载骨架、空数据、404 / 缺失 run_id、成功 Toast 等界面状态。
+</details>
 
-## 统一模拟场景
+<details>
+<summary><strong>高德天气出现 TIMEOUT / ERROR，是否影响监测？</strong></summary>
 
-演示时钟固定为 **2026-10-19 14:30（Asia/Shanghai）**，历史数据从当日 00:00 至 14:30，15 分钟粒度。
+不会。`TIMEOUT` 表示请求超过约 5 秒；`ERROR` 可能是 Key 未配置、鉴权失败、网络错误或接口返回不符合预期。先确认根目录 `.env` 中配置了有效的 `VITE_AMAP_KEY`，重启 `npm run dev`；再到 `/evidence` 点击“刷新天气”，用浏览器 F12 → Console 查看 `[天气]` 日志和接口错误码。即使天气不可用，室内 MQTT 数据、Priority 与 Event / Action / Recovery 不应被天气失败改写。
 
-| 区域 | 当前状态 | 演示用途 |
-| --- | --- | --- |
-| 第二食堂 | ALERT / Priority #1 | S5：Action 后 CO₂ 仍高于阈值，保持 `STILL_HANDLING` |
-| 图书馆 | WATCH / Priority #2 | S4：Rule 与 ML 分歧；外部天气 TIMEOUT；RAG 相关度偏低 |
-| 教学区 A | WATCH | 稳态中的轻微关注输入 |
-| 体育馆 | NORMAL | S5：首组后验仍异常，连续两组合规后 `RECOVERED` |
-| 东区宿舍 | NORMAL | RAG No-source（缺失）展示 |
-| 实验楼 | NORMAL | 外部数据源 MISSING 展示 |
+</details>
 
-种子 Run Trace：
+<details>
+<summary><strong>打开页面却没有曲线、ML 显示“样本积累中”？</strong></summary>
 
-- `RUN-20261019-001`：第二食堂 Recovery 重新评估 → `STILL_HANDLING`
-- `RUN-20261019-002`：图书馆证据分析 → `OPEN · WATCH`，保留 Rule / ML 分歧
-- `RUN-20261019-003`：体育馆 Recovery 重新评估 → `RECOVERED`
-- `RUN-20261019-004`：六区域 Priority 排序快照
+先确认 MQTT 模拟器持续发布。实时图表需要至少两个数据点；Z-score 会在当前点之前积累足够的历史基线后才输出结果（当前最少 12 个基线点，每 5 秒一条）。断网、刚启动或本地历史为空时不应凭空显示模型判定。
 
-这些是 **S1–S5 的部分演示切片**，不是完整的五场景验收记录。正式 S1–S5 场景脚本、回归测试与发布证据应在后续阶段补齐。
+</details>
 
-## 核心业务约束（已落地）
+<details>
+<summary><strong>为什么运行 Python 脚本后，报告与当前 MQTT 大屏不一样？</strong></summary>
 
-1. **Action Completed ≠ Recovery**：记录 Action 后事件进入 `HANDLING`；只有最新 Action 之后的有效样本满足规则才可能 `RECOVERED`。
-2. **Evidence Failure ≠ Business Not Recovered**：外部证据超时或缺失只影响对应证据与解释完整度，不直接改写事件状态。
-3. **已保存结果稳定**：Run Trace 从本地存储读取；重新打开不会触发新的模型或工具调用。
-4. **模型边界**：ML 是演示占位输出，不修改 Priority / Event / Recovery；LLM Explain 为模板生成，只复述已保存证据。
-5. **按最新 Action 重新开窗**：追加新 Action 后，旧后验样本不再计入新评估窗口；在没有新数据时会得到 `INSUFFICIENT_EVIDENCE`。
+两条链目前不会自动互相导出：未指定 CSV 时，脚本读取 `sensor_export.csv`，或者生成 / 复用 `sensor_export_simulated.csv`。若要分析你自己的采样记录，请先导出符合字段约定的 CSV，再通过 `--csv` 指定文件；不要把模拟离线数据当作实时历史。
 
-## 演示路径建议
+</details>
 
-1. **Overview**：查看第二食堂为什么排第一，展开因子贡献与证据健康。
-2. **History**：切换区域与时间范围，查看 Event / Action 标记和 Action 前后均值对比。
-3. **Evidence**：切换第二食堂 / 图书馆，查看超时、缺失、RAG 低相关度和 Rule / ML 分歧。
-4. **事件详情**：
-   - 第二食堂直接点击“执行 Recovery 重新评估”，会生成新的 `STILL_HANDLING` 运行。
-   - 图书馆可记录一条 Action，再重新评估；由于新 Action 后没有样本，结果为 `INSUFFICIENT_EVIDENCE`。
-5. **Run Trace**：打开新生成的 `run_id`，刷新页面确认结果保持不变；查看失败与版本信息。
-6. **空间地图 / 现场 H5**：确认地图、H5 与 Web 使用同一状态；点击 Camera / TTS 会明确提示阶段二未实现。
-7. 如需恢复初始状态：顶部“重置演示” → 确认重置。
+## ⚠️ 使用边界
 
-## 目录结构
-
-```text
-src/
-├── App.tsx                    # 路由
-├── main.tsx                   # 入口与样式加载
-├── components/
-│   ├── charts/                # Recharts 趋势图与时间标记
-│   ├── domain/                # PriorityTable / EvidenceCard / IsometricMap / ZonePicker 等
-│   ├── layout/                # AppShell / Sidebar / Topbar
-│   └── ui/                    # Button / Badge / Card / Modal / Notice / Skeleton 等
-├── data/
-│   ├── zones.ts               # 6 区域定义与指标曲线锚点
-│   ├── history.ts             # 确定性 15 分钟历史序列
-│   ├── evidence.ts            # 证据生成、健康计数、证据冲突
-│   ├── events.ts              # 种子事件 / Action / 后验样本
-│   ├── runs.ts                # 种子 Run Trace 与本地运行构建器
-│   ├── seed.ts                # 初始状态
-│   └── types.ts               # 统一业务类型
-├── domain/
-│   ├── priority.ts            # Priority 评分与解释因子
-│   ├── recovery.ts            # Recovery Rule 判定
-│   ├── constants.ts           # 版本、阈值、标签、演示时钟
-│   └── format.ts              # 日期、时长、数值格式化
-├── pages/                     # 10 个页面（含 H5 与 404）
-├── state/
-│   ├── AppStore.tsx           # 持久化状态、Action、重新评估
-│   ├── selectors.ts           # 查询辅助
-│   └── ToastContext.tsx       # 轻量反馈
-└── styles/                    # tokens / global / components / pages
-docs/
-└── screenshots/               # 实际运行截图
-```
-
-## 验证情况
-
-- `npm run build`：通过。
-- `npm run lint`：0 errors；存在 Fast Refresh / Effect 相关警告（见下）。
-- 使用本机 Edge + Playwright Core 无头浏览器检查了 1440 / 1280 / 1024 / 768 / 390 宽度。
-- 所有已实现路由无控制台错误或页面异常。
-- 实测交互：
-  - 记录 Action 后事件进入 `HANDLING`；
-  - 新 Action 后重新评估 → `INSUFFICIENT_EVIDENCE`，生成并保存新 Run Trace；
-  - 第二食堂重新评估 → `STILL_HANDLING`，刷新后结果不变；
-  - “重置演示”恢复 4 条种子运行；
-  - 768px 下 Priority 表切换为移动卡片，390px 下页面可用。
-- 运行截图见 [docs/screenshots](docs/screenshots/)。
-
-## 本阶段未实现 / 已知限制
-
-- 无后端、数据库、MQTT、真实传感器、真实外部 API、真实 RAG / LLM / ML 服务。
-- ML 当前为固定演示占位输出；真实训练、评估指标、Reload 测试与错误案例集已确认纳入后续最高标准范围。
-- Camera 拍照、照片上传、TTS、ASR 当前未实现（已确认纳入后续范围）；H5 当前为只读预览，不支持在 H5 内记录 Action。
-- 地图为 Three.js 3D 示意场景（非真实地理位置坐标），建筑、道路与装饰均为程序化生成的低多边形模型。
-- 不能注入新的后验数据；演示恢复与未恢复线索来自预置样本。新增 Action 后会因无新样本得到证据不足。
-- 历史与当前数据固定在演示时钟，不会实时更新。
-- 未完成正式 S1–S5 场景脚本回放、Regression 测试、系统级 Failure 调试记录和发布证据汇总。
-- 构建产物主 JS 约 1.39 MB（gzip 约 389 KB），主要来自 Three.js 与 Recharts；本阶段未做路由级代码拆分。
-- Oxlint 仍有 Fast Refresh（同一文件导出 hook/工具函数）与 Effect 内状态更新提示，未影响运行。
-
-## 下一步
-
-1. 完成 GitHub 草稿仓库 / 正式仓库初始化（私有草稿持续开发，公开正式仓库仅接收发布快照）。
-2. 若教师提供 C02 AirGuard 仓库，再做资产核验，并决定哪些当前原型代码可以直接迁移。
-3. 进入阶段二：后端 / SQLite、真实 Web API、RAG / Citation、Tool Calling、真实 LLM Context、ML 闭环、ASR / TTS / Camera。
-4. 补齐 S1–S5 场景脚本、Failure 注入、Regression、发布证据与独立复现说明。
-5. 正式仓库只接收确认完成的发布版本，不推送草稿历史。
+本项目面向教学与竞赛演示，不提供真实公共卫生判断、人员身份识别或自动物理控制；阈值与 Priority 只是项目内可解释的关注规则。公共 MQTT Broker 和前端天气 Key 均不适合承载正式生产或敏感数据。若扩展为正式系统，需要私有消息服务、密钥代理、服务端持久化、权限隔离，并补齐异常输入、时序健壮性与场景回归验证。

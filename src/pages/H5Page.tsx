@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Camera,
   ClipboardCheck,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { LogoMark } from '../components/ui/LogoMark'
 import { DispositionButton } from '../components/domain/DispositionButton'
+import { H5TrendChart } from '../components/charts/H5TrendChart'
 import { useAppStore } from '../state/AppStore'
 import { useLiveData } from '../state/LiveDataContext'
 import { useToast } from '../state/ToastContext'
@@ -19,6 +20,8 @@ import { getActiveEvents, getEventsForZone } from '../state/selectors'
 import { METRIC_META, ZONE_COLORS } from '../domain/constants'
 import { formatNumber } from '../domain/format'
 import { metricStatus } from '../domain/priority'
+import { prepareChartSeries } from '../domain/chartSeries'
+import type { MetricKey } from '../data/types'
 import {
   EventStatusBadge,
   ZoneStatusBadge,
@@ -196,6 +199,52 @@ function MetricCells({ metrics }: { metrics: ZoneMetrics }) {
   )
 }
 
+/**
+ * 本区域实时趋势：读取当前选中区域的 MQTT 历史序列，
+ * 跟随 priority 的主要指标（与上方 summary 文案口径一致）。
+ * 迷你折线图固定 150px 高，用于填补 iPad 竖屏下方空白。
+ */
+function ZoneTrend({ zoneId, metric }: { zoneId: string; metric: MetricKey }) {
+  const { histories } = useLiveData()
+  const meta = METRIC_META[metric]
+  const pointCount = (histories[zoneId] ?? []).length
+  const rows = useMemo(
+    () =>
+      prepareChartSeries(
+        (histories[zoneId] ?? []).map((point) => ({
+          ts: point.ts,
+          pm25: point.pm25,
+          co2: point.co2,
+          crowdDensity: point.crowdLevel,
+        })),
+      ),
+    [histories, zoneId],
+  )
+
+  return (
+    <div className="h5-trend">
+      <div className="h5-trend__head">
+        <span className="h5-eyebrow">本区域实时趋势</span>
+        <small>
+          {meta.shortLabel} · {meta.unit}
+        </small>
+      </div>
+      {pointCount >= 2 ? (
+        <H5TrendChart
+          data={rows}
+          metric={metric}
+          color={ZONE_COLORS[zoneId]}
+          height={150}
+        />
+      ) : (
+        <div className="h5-trend__empty">
+          等待 MQTT 实时数据，累计 2 个点后绘制趋势
+        </div>
+      )}
+    </div>
+  )
+}
+
 function OverviewTab({
   zoneId,
   onZoneChange,
@@ -247,6 +296,10 @@ function OverviewTab({
         </p>
         <MetricCells metrics={metrics} />
         {priority && <p className="h5-summary">{priority.summary}</p>}
+        <ZoneTrend
+          zoneId={zoneId}
+          metric={priority?.primaryMetric ?? 'pm25'}
+        />
       </section>
     </>
   )

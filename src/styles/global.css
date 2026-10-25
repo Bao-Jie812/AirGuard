@@ -213,6 +213,13 @@
   border: 1px dashed var(--border-strong);
 }
 
+/* button 版 nav-item（如「离线分析报告」）与 <a> 版结构类名一致；
+   消除浏览器对 button 的 UA 默认 text-align，保证两张卡片排版完全对齐 */
+button.nav-item {
+  width: 100%;
+  text-align: left;
+}
+
 .sidebar__footer {
   padding: 14px 16px 16px;
   border-top: 1px solid var(--border);

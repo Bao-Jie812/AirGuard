@@ -1,6 +1,7 @@
 import {
   ClipboardList,
   FileSearch,
+  FileText,
   LayoutDashboard,
   LineChart,
   Map,
@@ -262,6 +263,26 @@ export function Sidebar({ open, onClose }: SidebarProps) {
               </span>
               <ArrowUpRight size={15} className="nav-item__external" />
             </Link>
+            <button
+              type="button"
+              className="nav-item nav-item--secondary"
+              onClick={() => {
+                window.open('/report.html', '_blank')
+                onClose()
+              }}
+            >
+              <span className="nav-item__icon">
+                <FileText size={18} strokeWidth={1.8} />
+              </span>
+              <span className="nav-item__copy">
+                <span className="nav-item__label">
+                  离线分析报告
+                  <span className="nav-item__tag">HTML</span>
+                </span>
+                <span className="nav-item__hint">查看历史数据复盘</span>
+              </span>
+              <ArrowUpRight size={15} className="nav-item__external" />
+            </button>
           </nav>
         </div>
 

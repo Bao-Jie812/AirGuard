@@ -762,43 +762,43 @@ const CSS=`
 @keyframes campus-event-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.6)}}
 /* 区域详情控制面板：HTML 层白色毛玻璃弹窗，与 Web 端浅色视觉一致 */
 .zone-panel-layer{position:absolute;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:18px;pointer-events:none}
-.zone-panel{pointer-events:auto;position:relative;width:min(490px,94%);max-height:calc(100% - 16px);overflow:auto;border-radius:16px;border:1px solid rgba(255,255,255,.85);background:linear-gradient(160deg,rgba(255,255,255,.94),rgba(246,250,248,.9));backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);box-shadow:0 26px 70px rgba(22,48,43,.3),inset 0 0 0 1px rgba(226,235,232,.6);color:#16302b;padding:15px 16px 12px;animation:zone-panel-in .34s cubic-bezier(.18,.9,.26,1.18)}
-.zone-panel::before{content:"";position:absolute;top:8px;left:8px;width:15px;height:15px;border-top:2px solid rgba(13,155,134,.5);border-left:2px solid rgba(13,155,134,.5);border-top-left-radius:6px;pointer-events:none}
-.zone-panel::after{content:"";position:absolute;bottom:8px;right:8px;width:15px;height:15px;border-bottom:2px solid rgba(13,155,134,.5);border-right:2px solid rgba(13,155,134,.5);border-bottom-right-radius:6px;pointer-events:none}
+.zone-panel{pointer-events:auto;position:relative;width:min(580px,94%);max-height:min(90vh,calc(100% - 16px));overflow-y:auto;overflow-x:hidden;border-radius:16px;border:1px solid rgba(255,255,255,.85);background:linear-gradient(160deg,rgba(255,255,255,.94),rgba(246,250,248,.9));backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);box-shadow:0 26px 70px rgba(22,48,43,.3),inset 0 0 0 1px rgba(226,235,232,.6);color:#16302b;padding:20px 22px 16px;animation:zone-panel-in .34s cubic-bezier(.18,.9,.26,1.18)}
+.zone-panel::before{content:"";position:absolute;top:10px;left:10px;width:16px;height:16px;border-top:2px solid rgba(13,155,134,.5);border-left:2px solid rgba(13,155,134,.5);border-top-left-radius:6px;pointer-events:none}
+.zone-panel::after{content:"";position:absolute;bottom:10px;right:10px;width:16px;height:16px;border-bottom:2px solid rgba(13,155,134,.5);border-right:2px solid rgba(13,155,134,.5);border-bottom-right-radius:6px;pointer-events:none}
 @keyframes zone-panel-in{from{opacity:0;transform:translateY(16px) scale(.94)}to{opacity:1;transform:none}}
-.zone-panel__head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
-.zone-panel__eyebrow{font-size:10px;letter-spacing:2.2px;color:#0d9b86;font-weight:600}
-.zone-panel__close{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;border:1px solid #e2ebe8;background:rgba(246,250,248,.9);color:#4f6762;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
+.zone-panel__head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.zone-panel__eyebrow{font-size:10.5px;letter-spacing:2.2px;color:#0d9b86;font-weight:600}
+.zone-panel__close{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;border:1px solid #e2ebe8;background:rgba(246,250,248,.9);color:#4f6762;cursor:pointer;transition:background .15s,border-color .15s,color .15s}
 .zone-panel__close:hover{background:#eef4f2;border-color:#cfdeda;color:#16302b}
-.zone-panel__title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:11px}
-.zone-panel__title-row h3{margin:0;font-size:19px;letter-spacing:.5px;color:#16302b}
-.zone-panel__title-row p{margin:3px 0 0;font-size:11px;color:#7f958f}
-.zone-panel__badge{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:4px 10px;border:1px solid;border-radius:999px;background:rgba(255,255,255,.8)}
+.zone-panel__title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}
+.zone-panel__title-row h3{margin:0;font-size:21px;letter-spacing:.5px;color:#16302b}
+.zone-panel__title-row p{margin:4px 0 0;font-size:11.5px;color:#7f958f}
+.zone-panel__badge{flex-shrink:0;display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:5px 12px;border:1px solid;border-radius:999px;background:rgba(255,255,255,.8)}
 .zone-panel__badge i{width:7px;height:7px;border-radius:50%;box-shadow:0 0 6px currentColor}
 /* 内部实景 3D 教室：宽幅铺满面板上半部，叠层角标与实时指标胶囊浮于 Canvas 之上 */
-.zone-panel__scene{position:relative;border-radius:12px;overflow:hidden;aspect-ratio:21/10;border:1px solid #cfdeda;background:#eef4f2;margin-bottom:11px}
-.zone-panel__scene-live{position:absolute;top:8px;left:8px;display:inline-flex;align-items:center;gap:5px;font-size:9.5px;font-weight:600;letter-spacing:1.2px;color:#b3483a;background:rgba(255,255,255,.85);border:1px solid rgba(217,106,85,.35);border-radius:999px;padding:3px 9px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.zone-panel__scene{position:relative;border-radius:12px;overflow:hidden;aspect-ratio:2/1;border:1px solid #cfdeda;background:#eef4f2;margin-bottom:14px}
+.zone-panel__scene-live{position:absolute;top:10px;left:10px;display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;letter-spacing:1.2px;color:#b3483a;background:rgba(255,255,255,.85);border:1px solid rgba(217,106,85,.35);border-radius:999px;padding:4px 10px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .zone-panel__scene-live i{width:6px;height:6px;border-radius:50%;background:#d96a55;box-shadow:0 0 6px rgba(217,106,85,.8);animation:campus-event-pulse 1.3s ease-in-out infinite}
-.zone-panel__scene-label{position:absolute;top:8px;right:8px;font-size:9.5px;letter-spacing:.8px;color:#4f6762;background:rgba(255,255,255,.85);border:1px solid #e2ebe8;border-radius:999px;padding:3px 9px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
-.zone-panel__scene-metrics{position:absolute;left:8px;right:8px;bottom:8px;display:flex;gap:6px;flex-wrap:wrap}
-.zone-panel__chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.88);border:1px solid rgba(226,235,232,.9);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);font-size:10.5px;color:#4f6762}
-.zone-panel__chip b{font-variant-numeric:tabular-nums;font-weight:600;font-size:11.5px}
-.zone-panel__chip small{font-size:9px;color:#7f958f}
-.zone-panel__ops-head{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#c98a1e;margin-bottom:8px;letter-spacing:.5px}
-.zone-panel__actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-.zone-panel__actions button{display:flex;align-items:center;gap:9px;text-align:left;padding:9px 11px;border-radius:10px;border:1px solid #cfdeda;background:linear-gradient(150deg,#ffffff,#f2f7f5);color:#16302b;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s}
+.zone-panel__scene-label{position:absolute;top:10px;right:10px;font-size:10px;letter-spacing:.8px;color:#4f6762;background:rgba(255,255,255,.85);border:1px solid #e2ebe8;border-radius:999px;padding:4px 10px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.zone-panel__scene-metrics{position:absolute;left:10px;right:10px;bottom:10px;display:flex;gap:8px;flex-wrap:wrap}
+.zone-panel__chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;background:rgba(255,255,255,.88);border:1px solid rgba(226,235,232,.9);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);font-size:11px;color:#4f6762}
+.zone-panel__chip b{font-variant-numeric:tabular-nums;font-weight:600;font-size:12.5px}
+.zone-panel__chip small{font-size:9.5px;color:#7f958f}
+.zone-panel__ops-head{display:flex;align-items:center;gap:6px;font-size:12px;color:#c98a1e;margin-bottom:10px;letter-spacing:.5px}
+.zone-panel__actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.zone-panel__actions button{display:flex;align-items:center;gap:10px;text-align:left;padding:11px 13px;border-radius:10px;border:1px solid #cfdeda;background:linear-gradient(150deg,#ffffff,#f2f7f5);color:#16302b;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s}
 .zone-panel__actions button:hover:not(:disabled){transform:translateY(-1px);border-color:#0d9b86;box-shadow:0 6px 16px rgba(13,155,134,.18)}
 .zone-panel__actions button:disabled{opacity:.55;cursor:default}
 .zone-panel__actions svg{flex-shrink:0;color:#0d9b86}
 .zone-panel__actions span{display:flex;flex-direction:column;gap:2px}
-.zone-panel__actions strong{font-size:12.5px}
-.zone-panel__actions small{font-size:9.5px;color:#7f958f;line-height:1.35}
-.zone-panel__handling{display:flex;align-items:center;gap:7px;margin-top:10px;font-size:11px;line-height:1.5;color:#9a6b12;border:1px dashed #eedcae;border-radius:8px;padding:7px 10px;background:#fbf3df}
+.zone-panel__actions strong{font-size:13px}
+.zone-panel__actions small{font-size:10px;color:#7f958f;line-height:1.35}
+.zone-panel__handling{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:11.5px;line-height:1.5;color:#9a6b12;border:1px dashed #eedcae;border-radius:8px;padding:9px 12px;background:#fbf3df}
 .zone-panel__handling--info{color:#2e8b6a;border-color:#c3e4d5;background:#e6f4ee}
 .zone-panel__handling i{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:#c98a1e;animation:campus-event-pulse 1.3s ease-in-out infinite}
 .zone-panel__handling--info i{background:#2e8b6a}
-.zone-panel__ok{font-size:11.5px;color:#2e8b6a;border:1px dashed #c3e4d5;border-radius:8px;padding:8px 10px;background:#e6f4ee}
-.zone-panel__foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:11px;padding-top:8px;border-top:1px solid #e2ebe8;font-size:10px;color:#7f958f;letter-spacing:.4px}
+.zone-panel__ok{font-size:12px;color:#2e8b6a;border:1px dashed #c3e4d5;border-radius:8px;padding:10px 12px;background:#e6f4ee}
+.zone-panel__foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;padding-top:10px;border-top:1px solid #e2ebe8;font-size:10.5px;color:#7f958f;letter-spacing:.4px}
 .zone-panel__mqtt{display:inline-flex;align-items:center;gap:5px}
 .zone-panel__mqtt::before{content:"";width:6px;height:6px;border-radius:50%;background:#a8bcb5}
 .zone-panel__mqtt--online::before{background:#0d9b86;box-shadow:0 0 6px rgba(13,155,134,.6)}

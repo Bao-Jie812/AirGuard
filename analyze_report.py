@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import base64
 import io
+import json
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -34,6 +35,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap, to_rgb
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path as MplPath
 
 # --------------------------------------------------------------------------
 # 口径常量（与 Web 端 src/domain/constants.ts 保持一致）
@@ -74,6 +78,17 @@ INK_SECONDARY = "#52514e"
 INK_MUTED = "#898781"
 GRID_COLOR = "#e1e0d9"
 AXIS_COLOR = "#c3c2b7"
+
+# 趋势线平滑：3 分钟居中滑动平均（5 秒粒度 × 36 点）。
+# 窗口要足够宽，异常段边缘才会从"直上直下的砖块"变成有斜坡的波峰；
+# 只影响图表与 tooltip 展示，摘要统计 / 事件派生仍使用原始 5 秒数据
+# （与 Web 端 src/domain/chartSeries.ts 的口径一致）。
+SMOOTH_WINDOW = 36
+
+# 绘图区在整图中的水平占比（对应 subplots_adjust 的 left/right）：
+# tooltip 的 x→时间换算依赖这两个值，改动时必须同步 TOOLTIP_JS。
+PLOT_LEFT = 0.055
+PLOT_RIGHT = 0.865
 
 # 模拟数据的正常游走配置（与 simulator.js NORMAL_CONFIG 一致）
 NORMAL_CFG = {
@@ -348,32 +363,94 @@ def _end_labels(ax, items: list[tuple[pd.Timestamp, float, str]]) -> None:
         )
 
 
+def _smooth(zdf: pd.DataFrame, metric: str) -> pd.Series:
+    """3 分钟居中滑动平均：抹掉 5 秒粒度的单步抖动，密集折线呈现为连续波峰。"""
+    return (
+        zdf.set_index("ts")[metric]
+        .astype(float)
+        .rolling(SMOOTH_WINDOW, center=True, min_periods=1)
+        .mean()
+    )
+
+
+def _gradient_fill(ax, x_index, y_values, color: str, alpha_max: float = 0.16) -> None:
+    """曲线下方的竖向半透明渐变面积（底部透明 → 曲线处 color·alpha_max）。
+
+    matplotlib 没有原生渐变填充：用 imshow 画竖向渐变位图，
+    再用曲线围成的 PathPatch 裁剪到面积区域。需在 set_ylim 之后调用。
+    """
+    rgb = to_rgb(color)
+    cmap = LinearSegmentedColormap.from_list(
+        f"area-{color}", [(1.0, 1.0, 1.0, 0.0), (*rgb, alpha_max)]
+    )
+    x_num = mdates.date2num(x_index)
+    y0, y1 = ax.get_ylim()
+    grad = np.linspace(0.0, 1.0, 256).reshape(-1, 1)
+    im = ax.imshow(
+        grad,
+        extent=[x_num[0], x_num[-1], y0, y1],
+        aspect="auto",
+        cmap=cmap,
+        origin="lower",
+        interpolation="bilinear",
+        zorder=1,
+    )
+    y_arr = np.asarray(y_values, dtype=float)
+    verts = np.column_stack(
+        [
+            np.concatenate([x_num, x_num[::-1]]),
+            np.concatenate([y_arr, np.full(y_arr.shape, y0)]),
+        ]
+    )
+    clip = PathPatch(MplPath(verts), facecolor="none", edgecolor="none")
+    ax.add_patch(clip)  # 不可见，仅作为 imshow 的裁剪路径
+    im.set_clip_path(clip)
+
+
 def trend_chart(df: pd.DataFrame, metric: str) -> str:
     th = THRESHOLDS[metric]
     fig, ax = plt.subplots(figsize=(10.8, 3.9), dpi=160)
 
+    # Y 轴按原始数据定范围（覆盖真实峰值与严重阈值），平滑不会削掉越限上下文
+    all_vals = df[metric].astype(float)
+    y_lo = min(float(all_vals.min()), th["watch"])
+    y_hi = max(float(all_vals.max()), th["critical"])
+    ax.set_ylim(y_lo * 0.92, y_hi * 1.06)
+    # X 轴贴齐数据起止：tooltip 的 x→时间按绘图区边界换算，不能留 autoscale 边距
+    ax.set_xlim(df["ts"].min(), df["ts"].max())
+
+    smoothed: dict[str, pd.Series] = {}
     end_items = []
     for zone in ZONES:
         zdf = df[df["zone_id"] == zone["id"]]
         if zdf.empty:
             continue
         color = ZONE_COLORS[zone["id"]]
+        s = _smooth(zdf, metric)
+        smoothed[zone["id"]] = s
         ax.plot(
-            zdf["ts"],
-            zdf[metric],
+            s.index,
+            s.values,
             color=color,
-            linewidth=2,
+            linewidth=1.4,
             solid_joinstyle="round",
             solid_capstyle="round",
             label=zone["short"],
             zorder=3,
         )
-        x_end, y_end = zdf["ts"].iloc[-1], float(zdf[metric].iloc[-1])
-        # 末端圆点：>=8px，2px surface ring
+        x_end, y_end = s.index[-1], float(s.iloc[-1])
+        # 末端圆点：>=8px，2px surface ring；标注数字用原始最新值，与摘要卡一致
         ax.scatter(
             [x_end], [y_end], s=80, color=color, edgecolor="white", linewidth=2, zorder=5
         )
-        end_items.append((x_end, y_end, f"{zone['short']} {y_end:g}"))
+        latest_raw = float(zdf[metric].iloc[-1])
+        end_items.append((x_end, y_end, f"{zone['short']} {latest_raw:g}"))
+
+    # 渐变面积需在 Y 轴范围确定后绘制
+    for zone in ZONES:
+        s = smoothed.get(zone["id"])
+        if s is not None:
+            _gradient_fill(ax, s.index, s.values, ZONE_COLORS[zone["id"]])
 
     # 阈值参考线（status 色细线 + muted 文字标签，右侧轴内对齐）
     for key, label in (("watch", "关注"), ("alert", "警戒"), ("critical", "严重")):
@@ -385,16 +462,12 @@ def trend_chart(df: pd.DataFrame, metric: str) -> str:
             fontsize=8, color=INK_MUTED, va="bottom", ha="left",
         )
 
-    ax.grid(axis="y", color=GRID_COLOR, linewidth=1)  # hairline 实线
-    ax.set_axisbelow(True)
+    # 网格压在渐变面积之上、折线之下，避免被填充盖没
+    ax.grid(axis="y", color=GRID_COLOR, linewidth=1, zorder=2.5)
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color(AXIS_COLOR)
 
-    all_vals = df[metric].astype(float)
-    y_lo = min(float(all_vals.min()), th["watch"])
-    y_hi = max(float(all_vals.max()), th["critical"])
-    ax.set_ylim(y_lo * 0.92, y_hi * 1.06)
     ax.set_title(f"{th['label']} 浓度趋势（{th['unit']}）", fontsize=13, loc="left", pad=26)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.xaxis.set_major_locator(mdates.HourLocator())
@@ -404,7 +477,7 @@ def trend_chart(df: pd.DataFrame, metric: str) -> str:
         frameon=False, fontsize=9.5, handlelength=1.6, columnspacing=1.6,
     )
 
-    fig.subplots_adjust(left=0.055, right=0.865, top=0.86, bottom=0.12)
+    fig.subplots_adjust(left=PLOT_LEFT, right=PLOT_RIGHT, top=0.86, bottom=0.12)
     _end_labels(ax, end_items)
 
     buf = io.BytesIO()
@@ -413,9 +486,126 @@ def trend_chart(df: pd.DataFrame, metric: str) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def build_chart_payload(df: pd.DataFrame) -> dict:
+    """tooltip 数据：平滑后 30 秒抽样，JSON 内嵌进 HTML。
+
+    tooltip 显示的是图上曲线的值（平滑后），与看到的折线自洽；
+    摘要卡与事件时间线仍基于原始 5 秒数据。
+    """
+    payload: dict = {}
+    for metric, th in THRESHOLDS.items():
+        series = []
+        for zone in ZONES:
+            zdf = df[df["zone_id"] == zone["id"]]
+            if zdf.empty:
+                continue
+            s = _smooth(zdf, metric).iloc[::6]  # 5s × 6 = 30 秒粒度
+            points = [
+                [int(ts.timestamp() * 1000), round(float(v))]
+                for ts, v in s.items()
+            ]
+            series.append(
+                {
+                    "name": zone["short"],
+                    "color": ZONE_COLORS[zone["id"]],
+                    "points": points,
+                }
+            )
+        payload[metric] = {"unit": th["unit"], "series": series}
+    return payload
+
+
 # --------------------------------------------------------------------------
 # HTML 报告
 # --------------------------------------------------------------------------
+
+# 图表 tooltip：matplotlib 输出的是静态 PNG，无法自带悬浮交互，
+# 这里把平滑后的数据内嵌为 JSON，用原生 JS 在图片上叠加 crosshair + tooltip。
+# PLOT_L/PLOT_R 与 PLOT_LEFT/PLOT_RIGHT（subplots_adjust）一一对应。
+TOOLTIP_JS = """
+(function () {
+  var PLOT_L = 0.055, PLOT_R = 0.865; /* 与 analyze_report.py 的 PLOT_LEFT/RIGHT 一致 */
+  var data = window.REPORT_CHARTS || {};
+
+  function nearestIndex(pts, t) {
+    var lo = 0, hi = pts.length - 1;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (pts[mid][0] < t) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0 && Math.abs(pts[lo - 1][0] - t) <= Math.abs(pts[lo][0] - t)) return lo - 1;
+    return lo;
+  }
+
+  function fmtTime(ms) {
+    var d = new Date(ms);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+
+  document.querySelectorAll('.chart-hit').forEach(function (box) {
+    var metric = box.getAttribute('data-metric');
+    var chart = data[metric];
+    if (!chart || !chart.series || !chart.series.length) return;
+    var series = chart.series;
+    var tip = box.querySelector('.chart-tip');
+    var hair = box.querySelector('.chart-crosshair');
+    var t0 = Infinity, t1 = -Infinity;
+    series.forEach(function (s) {
+      t0 = Math.min(t0, s.points[0][0]);
+      t1 = Math.max(t1, s.points[s.points.length - 1][0]);
+    });
+
+    function hide() {
+      tip.style.display = 'none';
+      hair.style.display = 'none';
+    }
+
+    function handle(clientX, clientY) {
+      var rect = box.getBoundingClientRect();
+      var frac = (clientX - rect.left) / rect.width;
+      if (frac < PLOT_L || frac > PLOT_R) { hide(); return; }
+      var t = t0 + (frac - PLOT_L) / (PLOT_R - PLOT_L) * (t1 - t0);
+      var rows = [];
+      var snapT = t;
+      series.forEach(function (s) {
+        var p = s.points[nearestIndex(s.points, t)];
+        snapT = p[0];
+        rows.push({ name: s.name, color: s.color, value: p[1] });
+      });
+      var snapFrac = PLOT_L + (snapT - t0) / (t1 - t0) * (PLOT_R - PLOT_L);
+      hair.style.display = 'block';
+      hair.style.left = (snapFrac * 100) + '%';
+      var html = '<div class="chart-tip__time">' + fmtTime(snapT) +
+        '<span class="chart-tip__unit">' + chart.unit + '</span></div>';
+      rows.forEach(function (r) {
+        html += '<div class="chart-tip__row">' +
+          '<span class="chart-tip__dot" style="background:' + r.color + '"></span>' +
+          '<span>' + r.name + '</span>' +
+          '<span class="chart-tip__val">' + r.value.toLocaleString('zh-CN') + '</span>' +
+          '</div>';
+      });
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      var x = snapFrac * rect.width + 14;
+      var tw = tip.offsetWidth;
+      if (x + tw > rect.width - 8) x = snapFrac * rect.width - tw - 14;
+      var y = clientY - rect.top - 12;
+      var maxY = rect.height - tip.offsetHeight - 4;
+      tip.style.left = x + 'px';
+      tip.style.top = Math.max(4, Math.min(y, maxY)) + 'px';
+    }
+
+    box.addEventListener('mousemove', function (e) { handle(e.clientX, e.clientY); });
+    box.addEventListener('touchmove', function (e) {
+      var t = e.touches[0];
+      if (t) handle(t.clientX, t.clientY);
+    }, { passive: true });
+    box.addEventListener('mouseleave', hide);
+    box.addEventListener('touchend', hide);
+  });
+})();
+"""
 
 def _fmt(value: float, metric: str) -> str:
     return f"{value:,.0f}" if metric in ("pm25", "co2") else f"{value:.2f}"
@@ -434,8 +624,10 @@ def render_html(
     charts: dict[str, str],
     source: str,
     simulated: bool,
+    payload: dict,
 ) -> str:
     now = datetime.now()
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     cards = []
     for s in summaries:
         rows = []
@@ -565,6 +757,27 @@ def render_html(
     box-shadow: 0 1px 2px rgba(22,48,43,.04);
   }}
   .chart-card img {{ width: 100%; display: block; border-radius: 8px; }}
+  .chart-hit {{ position: relative; cursor: crosshair; }}
+  .chart-crosshair {{
+    position: absolute; top: 14%; bottom: 12%; width: 1px;
+    background: #9fb2c0; display: none; pointer-events: none;
+  }}
+  .chart-tip {{
+    position: absolute; display: none; pointer-events: none; z-index: 5;
+    background: #fff; border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 32px -18px rgba(24,50,68,.35);
+    font-size: 12px; padding: 8px 10px; white-space: nowrap;
+  }}
+  .chart-tip__time {{
+    color: var(--text-3); margin-bottom: 4px; font-variant-numeric: tabular-nums;
+  }}
+  .chart-tip__unit {{ margin-left: 6px; font-size: 10px; }}
+  .chart-tip__row {{ display: flex; align-items: center; gap: 6px; padding: 1px 0; }}
+  .chart-tip__dot {{ width: 8px; height: 8px; border-radius: 2px; flex: none; }}
+  .chart-tip__val {{
+    margin-left: auto; padding-left: 14px;
+    font-variant-numeric: tabular-nums; font-weight: 600;
+  }}
   .timeline {{ list-style: none; margin: 0; padding: 0 0 0 4px; }}
   .tl-item {{ position: relative; padding: 0 0 14px 22px; border-left: 2px solid var(--border-strong); }}
   .tl-item:last-child {{ padding-bottom: 0; }}
@@ -608,9 +821,21 @@ def render_html(
   <div class="zone-grid">{''.join(cards)}</div>
 
   <h2 class="section">指标趋势</h2>
-  <p class="section-sub">5 秒粒度折线；水平参考线为关注 / 警戒 / 严重阈值；末端标注为最新读数。</p>
-  <div class="chart-card"><img alt="PM2.5 趋势图" src="data:image/png;base64,{charts['pm25']}"></div>
-  <div class="chart-card"><img alt="CO₂ 趋势图" src="data:image/png;base64,{charts['co2']}"></div>
+  <p class="section-sub">趋势线为 3 分钟滑动平均（统计与事件判定仍按 5 秒原始值）；悬浮图表查看逐时刻数值；水平参考线为关注 / 警戒 / 严重阈值；末端标注为最新读数。</p>
+  <div class="chart-card">
+    <div class="chart-hit" data-metric="pm25">
+      <img alt="PM2.5 趋势图" src="data:image/png;base64,{charts['pm25']}">
+      <div class="chart-crosshair"></div>
+      <div class="chart-tip"></div>
+    </div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-hit" data-metric="co2">
+      <img alt="CO₂ 趋势图" src="data:image/png;base64,{charts['co2']}">
+      <div class="chart-crosshair"></div>
+      <div class="chart-tip"></div>
+    </div>
+  </div>
 
   <h2 class="section">事件时间线</h2>
   <p class="section-sub">{event_note}。</p>
@@ -628,6 +853,8 @@ def render_html(
     </p>
   </footer>
 </div>
+<script>window.REPORT_CHARTS = {payload_json};</script>
+<script>{TOOLTIP_JS}</script>
 </body>
 </html>"""
 
@@ -651,8 +878,9 @@ def main() -> None:
 
     _setup_style()
     charts = {metric: trend_chart(df, metric) for metric in ("pm25", "co2")}
+    payload = build_chart_payload(df)
 
-    html = render_html(summaries, events, charts, source, simulated)
+    html = render_html(summaries, events, charts, source, simulated, payload)
     out_path = Path(args.out)
     out_path.write_text(html, encoding="utf-8")
 

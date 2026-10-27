@@ -26,7 +26,8 @@ import {
 } from '../services/weather'
 import type { ActionType, PriorityAssessment, ZoneStatus } from '../data/types'
 import { isActiveEventStatus } from '../data/events'
-import { ZONES } from '../data/zones'
+import { getZoneName, ZONES } from '../data/zones'
+import { assessZoneAnomaly, type MetricAnomaly } from '../domain/anomaly'
 import { ACTION_TYPE_LABELS } from '../domain/constants'
 import {
   assessAllZones,
@@ -57,6 +58,42 @@ export interface LiveSensorReading {
 }
 
 export type MqttStatus = 'connecting' | 'online' | 'reconnecting' | 'offline'
+
+/**
+ * ML 隐患预警：固定规则未达警戒（正常/关注），但轻量 ML（Z-score
+ * 滑动窗口）判定 ANOMALY —— 读数虽未超标，却显著偏离近期历史分布，
+ * 属于缓慢爬升早期或传感器漂移等潜在风险，需要人工复核。
+ */
+export interface MlHiddenAlert {
+  zoneId: string
+  /** z 超过阈值的异常指标明细（可能多个） */
+  metrics: MetricAnomaly[]
+  /** 各指标 |z| 最大值，用于多区域同时触发时排序 */
+  maxAbsZ: number
+  /** ML 基线窗口样本数（佐证判定可信度） */
+  sampleSize: number
+  /** 本次持续偏离的首次检测时间（弹窗展示期间保持不变） */
+  detectedAt: number
+}
+
+/**
+ * ML 隐患干预记录：规则尚未越限（无事件可挂）时登记的轻量 Action，
+ * 不进入 AppStore 的 Event/Action 业务状态机，仅保存在当前会话。
+ * 登记后持续跟踪该区域：ML verdict 回到 NORMAL → 隐患自动解除；
+ * 规则越限（ALERT/CRITICAL）→ 移交常规事件流程，跟踪结束。
+ */
+export interface MlIntervention {
+  id: string
+  zoneId: string
+  /** 干预动作类型（默认 VENTILATION = 开启新风系统） */
+  type: ActionType
+  label: string
+  actionAt: string
+  operator: string
+  /** 干预时刻的异常指标快照（z 值等） */
+  metrics: MetricAnomaly[]
+  maxAbsZ: number
+}
 
 export interface WeatherState {
   status: 'LOADING' | 'VALID' | 'TIMEOUT' | 'ERROR'
@@ -128,12 +165,31 @@ interface LiveDataValue {
   addManualObservation: (
     input: AddObservationInput,
   ) => Promise<AddObservationResult>
+  /** 当前待处理的 ML 隐患预警；null = 无。由 MlAlertModal 全局渲染 */
+  mlAlert: MlHiddenAlert | null
+  /** 关掉预警（忽略 / 前往查看 / 记录干预 / ESC / 点遮罩）：该区域 3 分钟内不再重复弹窗 */
+  dismissMlAlert: (zoneId: string) => void
+  /** 未解除的 ML 隐患干预记录（轻量 Action，不关联事件，仅当前会话） */
+  mlInterventions: MlIntervention[]
+  /**
+   * 记录一次 ML 隐患干预（默认动作「开启新风系统」）：
+   * 关闭弹窗、抑制该区域再弹、经 airguard/control 联动模拟器恢复；
+   * Z-score 回落至正常区间后隐患自动解除（toast 通知）。
+   */
+  recordMlIntervention: (
+    zoneId: string,
+    metrics: MetricAnomaly[],
+    maxAbsZ: number,
+  ) => void
   clearLiveData: () => void
 }
 
 const LiveDataContext = createContext<LiveDataValue | null>(null)
 
 const WEATHER_REFRESH_MS = 10 * 60 * 1000
+
+/** ML 隐患预警防抖：同一区域被关掉后 3 分钟内不再重复弹窗 */
+const ML_ALERT_SNOOZE_MS = 3 * 60 * 1000
 
 /**
  * 设备时间与浏览器时间的最大允许偏差。
@@ -294,6 +350,12 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
   const [manualObservations, setManualObservations] = useState<
     ManualObservation[]
   >([])
+  // ML 隐患预警：当前展示中的弹窗（全局最多一个）
+  const [mlAlert, setMlAlert] = useState<MlHiddenAlert | null>(null)
+  // ML 隐患干预台账：仅当前会话，不落 localStorage
+  const [mlInterventions, setMlInterventions] = useState<MlIntervention[]>([])
+  // 预警防抖表：zoneId → 该时间点之前不再弹窗；用 ref 避免触发重渲染
+  const mlAlertSnoozeRef = useRef<Record<string, number>>({})
   // 用 ref 持有最新回调，避免 MQTT 监听因依赖变化反复解绑
   const applyRemoteRef = useRef(applyRemoteDisposition)
   const syncReadingRef = useRef(syncReading)
@@ -520,6 +582,9 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     setHistories({})
     setReadings({})
     setManualObservations([])
+    setMlAlert(null)
+    setMlInterventions([])
+    mlAlertSnoozeRef.current = {}
   }, [])
 
   // 未关闭事件参与 Priority：当前数据正常但存在 HANDLING 等事件时，
@@ -552,6 +617,140 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     return assessAllZones(seriesByZone, activeEventsByZone)
   }, [histories, activeEventsByZone])
 
+  // ── ML 隐患预警与干预跟踪 ─────────────────────────────────────
+  // 触发条件严格限定为分歧状态：规则恰好 NORMAL 且 Z-score ML 判定
+  // ANOMALY（即仲裁矩阵的 STRICT_UNION）。规则已到 WATCH/ALERT/CRITICAL
+  // 的区域不弹此窗 —— 越限走常规事件流（ALERT 起自动建事件）。
+  // 干预：recordMlIntervention 登记后该区域停止弹窗并持续跟踪；
+  //   ML verdict 回到 NORMAL（Z-score 回落至 ±阈值内）→ 隐患自动解除；
+  //   跟踪期间规则越限（ALERT/CRITICAL）→ 主事件流程接管，跟踪结束。
+  // 弹窗：全局同时只弹一个（取 |z| 最大者），其余区域等当前弹窗被处理后
+  //   在下一轮数据到达时轮候；同一区域被关掉后 3 分钟内防抖不再弹。
+  useEffect(() => {
+    const now = Date.now()
+
+    // 每个区域只计算一次规则状态 + ML 判定，两个阶段共用
+    const scans = ZONES.map((zone) => {
+      const history = histories[zone.zoneId]
+      const priority = priorities.find((item) => item.zoneId === zone.zoneId)
+      // 与 RuleVsMlCard 同口径：无实时数据（factors 为空）时规则侧不参与
+      const ruleStatus =
+        priority && priority.factors.length > 0 ? priority.zoneStatus : null
+      const ml =
+        history && history.length > 0
+          ? assessZoneAnomaly(zone.zoneId, history)
+          : null
+      return { zoneId: zone.zoneId, ruleStatus, ml }
+    })
+
+    // 阶段一：已登记干预的解除 / 移交判定
+    if (mlInterventions.length > 0) {
+      const resolved: string[] = []
+      const escalated: string[] = []
+      for (const item of mlInterventions) {
+        const scan = scans.find((entry) => entry.zoneId === item.zoneId)
+        if (!scan) continue
+        if (scan.ruleStatus === 'ALERT' || scan.ruleStatus === 'CRITICAL') {
+          escalated.push(item.zoneId)
+        } else if (scan.ml && scan.ml.verdict === 'NORMAL') {
+          resolved.push(item.zoneId)
+        }
+      }
+      if (resolved.length > 0 || escalated.length > 0) {
+        setMlInterventions((previous) =>
+          previous.filter(
+            (item) =>
+              !resolved.includes(item.zoneId) &&
+              !escalated.includes(item.zoneId),
+          ),
+        )
+        for (const zoneId of resolved) {
+          toastRef.current(
+            `ML 隐患已解除：${getZoneName(zoneId)} Z-score 已回落至正常区间，干预生效。`,
+            'success',
+          )
+        }
+        for (const zoneId of escalated) {
+          toastRef.current(
+            `${getZoneName(zoneId)} 规则已越限，ML 隐患移交常规事件处置流程。`,
+            'info',
+          )
+        }
+      }
+    }
+
+    // 阶段二：新隐患检测（仅 规则 NORMAL + ML ANOMALY 的分歧状态）
+    let candidate: MlHiddenAlert | null = null
+    for (const scan of scans) {
+      if (scan.ruleStatus !== 'NORMAL') continue
+      if (!scan.ml || scan.ml.verdict !== 'ANOMALY') continue
+      if ((mlAlertSnoozeRef.current[scan.zoneId] ?? 0) > now) continue
+      // 已登记干预的区域在隐患解除前不再弹窗
+      if (mlInterventions.some((item) => item.zoneId === scan.zoneId)) continue
+      const metrics = scan.ml.metrics.filter((item) => item.anomalous)
+      if (metrics.length === 0) continue
+      const maxAbsZ = scan.ml.maxAbsZ ?? 0
+      if (!candidate || maxAbsZ > candidate.maxAbsZ) {
+        candidate = {
+          zoneId: scan.zoneId,
+          metrics,
+          maxAbsZ,
+          sampleSize: scan.ml.sampleSize,
+          detectedAt: now,
+        }
+      }
+    }
+    if (!candidate) return
+    const next: MlHiddenAlert = candidate
+    setMlAlert((previous) => {
+      // 已有其他区域的弹窗在展示时不抢占，等用户处理后再轮候
+      if (previous && previous.zoneId !== next.zoneId) return previous
+      // 同区域持续偏离：刷新指标读数，但保留首次检测时间
+      return previous ? { ...next, detectedAt: previous.detectedAt } : next
+    })
+  }, [histories, priorities, mlInterventions])
+
+  const dismissMlAlert = useCallback((zoneId: string) => {
+    mlAlertSnoozeRef.current[zoneId] = Date.now() + ML_ALERT_SNOOZE_MS
+    setMlAlert((previous) =>
+      previous && previous.zoneId === zoneId ? null : previous,
+    )
+  }, [])
+
+  const recordMlIntervention = useCallback(
+    (zoneId: string, metrics: MetricAnomaly[], maxAbsZ: number) => {
+      const actionAt = new Date().toISOString()
+      const intervention: MlIntervention = {
+        id: `MLI-${Date.now().toString(36)}-${Math.random()
+          .toString(36)
+          .slice(2, 7)}`,
+        zoneId,
+        type: 'VENTILATION',
+        label: '开启新风系统',
+        actionAt,
+        operator: 'Web 工作台',
+        metrics,
+        maxAbsZ,
+      }
+      // 同区域重复登记时以最新一次干预为准
+      setMlInterventions((previous) => [
+        ...previous.filter((item) => item.zoneId !== zoneId),
+        intervention,
+      ])
+      // 关闭弹窗；干预期间由 mlInterventions 抑制再弹，snooze 做双保险
+      dismissMlAlert(zoneId)
+      // 联动演戏：通知模拟器进入恢复模式，读数平滑回落 → Z-score 回归 → 自动解除
+      publishControl({
+        action: 'START_RECOVERY',
+        zoneId,
+        at: actionAt,
+        clientId: CLIENT_ID,
+        source: 'ML_HIDDEN_ALERT',
+      })
+    },
+    [dismissMlAlert, publishControl],
+  )
+
   // 当前首要关注 = 实时 Priority #1。
   // 顶部关注区与「区域关注优先级」表格始终使用同一份排序结果，
   // 不再额外维护一个可能落后于表格的稳定状态。
@@ -570,6 +769,10 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       publishControl,
       manualObservations,
       addManualObservation,
+      mlAlert,
+      dismissMlAlert,
+      mlInterventions,
+      recordMlIntervention,
       clearLiveData,
     }),
     [
@@ -584,6 +787,10 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       publishControl,
       manualObservations,
       addManualObservation,
+      mlAlert,
+      dismissMlAlert,
+      mlInterventions,
+      recordMlIntervention,
       clearLiveData,
     ],
   )

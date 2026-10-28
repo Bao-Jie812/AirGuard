@@ -15,6 +15,7 @@ import {
   EVENT_TOPIC_PREFIX,
   EVIDENCE_TOPIC,
   EVIDENCE_TOPIC_PREFIX,
+  EVIDENCE_UPLOAD_TOPIC,
   SENSOR_TOPIC,
   SENSOR_TOPIC_PREFIX,
   getMqttClient,
@@ -55,6 +56,11 @@ export interface LiveSensorReading {
   status: ZoneStatus
   time: string
   receivedAt: number
+  /**
+   * 手动演示标记：报文带 "isManual": true（MQTTX 等手动发送）时为真。
+   * ML 隐患预警弹窗只在手动演示模式下触发；simulator 自动数据不携带此字段。
+   */
+  isManual?: boolean
 }
 
 export type MqttStatus = 'connecting' | 'online' | 'reconnecting' | 'offline'
@@ -133,7 +139,9 @@ export interface AddObservationInput {
 }
 
 export type AddObservationResult =
-  | { ok: true; synced: boolean }
+  // synced=true：已即时发布；false：MQTT 离线，已入待发队列，重连后自动补发。
+  // eventId：照片挂入的事件；该区域无未关闭事件时为 null（仅全局留档）
+  | { ok: true; synced: boolean; eventId: string | null }
   | { ok: false; message: string }
 
 /** 会话内最多保留的人工观察条数（图片为 dataURL，需控制内存占用） */
@@ -141,6 +149,49 @@ const MAX_MANUAL_OBSERVATIONS = 30
 
 /** 忽略公共 Broker 上过大的异常报文（正常压缩图 base64 远低于此值） */
 const MAX_EVIDENCE_IMAGE_CHARS = 400_000
+
+/**
+ * 人工观察 MQTT 待发队列的持久化键。
+ * iPad 拍照会调起全屏相机 UI，Safari 在此期间挂起 WebSocket ——
+ * 拍完照回来瞬间 client.connected 为 false，若直接放弃发布则照片
+ * 永久丢失（实测 mqtt.js 自带离线排队不可靠）。应用层队列落
+ * localStorage，重连后自动补发，页面刷新也不丢。
+ */
+const OBSERVATION_OUTBOX_KEY = 'airguard.evidence.outbox.v1'
+/** 待发队列上限：每条约几十 KB（压缩图 dataURL），防止挤爆 localStorage */
+const OBSERVATION_OUTBOX_MAX = 10
+
+interface PendingObservation {
+  topic: string
+  /** 完整报文 JSON（含 kind 字段），原样透传不重序列化 */
+  payload: string
+}
+
+function loadObservationOutbox(): PendingObservation[] {
+  try {
+    const raw = window.localStorage.getItem(OBSERVATION_OUTBOX_KEY)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is PendingObservation =>
+        !!item &&
+        typeof item === 'object' &&
+        typeof (item as PendingObservation).topic === 'string' &&
+        typeof (item as PendingObservation).payload === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
+function saveObservationOutbox(items: PendingObservation[]): void {
+  try {
+    window.localStorage.setItem(OBSERVATION_OUTBOX_KEY, JSON.stringify(items))
+  } catch {
+    // 存储不可用时队列退化为内存态，不影响在线同步
+  }
+}
 
 interface LiveDataValue {
   mqttStatus: MqttStatus
@@ -161,7 +212,7 @@ interface LiveDataValue {
   publishControl: (payload: Record<string, unknown>) => void
   /** 人工拍照留档（本端上传 + MQTT 接收的其他端记录），仅保存在当前会话 */
   manualObservations: ManualObservation[]
-  /** 生成一条人工观察记录：本地入库并经 MQTT 同步压缩图到其他终端 */
+  /** 生成一条人工观察记录：本地入库 + MQTT 同步压缩图（离线时入待发队列，重连自动补发） */
   addManualObservation: (
     input: AddObservationInput,
   ) => Promise<AddObservationResult>
@@ -190,6 +241,51 @@ const WEATHER_REFRESH_MS = 10 * 60 * 1000
 
 /** ML 隐患预警防抖：同一区域被关掉后 3 分钟内不再重复弹窗 */
 const ML_ALERT_SNOOZE_MS = 3 * 60 * 1000
+
+/**
+ * 手动演示模式窗口：某区域收到带 isManual:true 的读数后 60 秒内，
+ * 该区域允许弹出 ML 隐患预警。simulator 自动数据产生的规则/ML 分歧
+ * 一律不弹窗，仅在控制台记录（避免自动演示时弹窗干扰操作）。
+ */
+const MANUAL_MODE_WINDOW_MS = 60_000
+
+/**
+ * 防抖表持久化键（zoneId → 静默截止毫秒时间戳）。
+ * 之前只存于 ref，刷新页面即丢失 —— 启动瞬间会无视刚设置的静默期
+ * 再次弹窗；持久化后刷新不突破防抖。
+ */
+const ML_ALERT_SNOOZE_STORAGE_KEY = 'airguard.ml.alert.snooze.v1'
+
+/** 启动时恢复未过期的防抖表；过期项与脏数据直接丢弃 */
+function loadMlAlertSnooze(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(ML_ALERT_SNOOZE_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const now = Date.now()
+    const result: Record<string, number> = {}
+    for (const [zoneId, until] of Object.entries(parsed)) {
+      if (typeof until === 'number' && Number.isFinite(until) && until > now) {
+        result[zoneId] = until
+      }
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+function saveMlAlertSnooze(snooze: Record<string, number>): void {
+  try {
+    window.localStorage.setItem(
+      ML_ALERT_SNOOZE_STORAGE_KEY,
+      JSON.stringify(snooze),
+    )
+  } catch {
+    // 存储不可用时退化为会话内防抖，不影响主流程
+  }
+}
 
 /**
  * 设备时间与浏览器时间的最大允许偏差。
@@ -256,6 +352,11 @@ function parseSensorMessage(raw: unknown): LiveSensorReading | null {
     status: zoneStatusFromMetrics({ pm25, co2, crowdDensity: crowdLevel }),
     time,
     receivedAt,
+    // 手动演示标记：MQTTX 等手动注入的报文携带 "isManual": true；
+    // simulator 自动数据无此字段 → undefined（非手动）
+    ...(record.isManual === true || record.is_manual === true
+      ? { isManual: true }
+      : {}),
   }
 }
 
@@ -280,10 +381,12 @@ function parseDispositionMessage(raw: unknown): DispositionPayload | null {
   }
 }
 
-/** MQTT 人工观察报文（airguard/evidence/<zoneId>） */
+/** MQTT 人工观察报文（airguard/evidence/upload） */
 interface ObservationMessage {
   id: string
   zoneId: string
+  /** 上报端本地事件库中该区域未关闭事件的 id（跨端仅供匹配提示，可能落空） */
+  eventId?: string
   observedAt: string
   fileName: string
   imageUrl: string | null
@@ -315,6 +418,10 @@ function parseObservationMessage(raw: unknown): ObservationMessage | null {
   return {
     id: record.id,
     zoneId: record.zoneId,
+    eventId:
+      typeof record.eventId === 'string' && record.eventId
+        ? record.eventId
+        : undefined,
     observedAt:
       typeof record.observedAt === 'string'
         ? record.observedAt
@@ -334,7 +441,8 @@ function parseObservationMessage(raw: unknown): ObservationMessage | null {
 }
 
 export function LiveDataProvider({ children }: { children: ReactNode }) {
-  const { state, applyRemoteDisposition, syncReading } = useAppStore()
+  const { state, applyRemoteDisposition, appendEventEvidence, syncReading } =
+    useAppStore()
   const { toast } = useToast()
   const [mqttStatus, setMqttStatus] = useState<MqttStatus>('connecting')
   const [readings, setReadings] = useState<Record<string, LiveSensorReading>>({})
@@ -354,16 +462,52 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
   const [mlAlert, setMlAlert] = useState<MlHiddenAlert | null>(null)
   // ML 隐患干预台账：仅当前会话，不落 localStorage
   const [mlInterventions, setMlInterventions] = useState<MlIntervention[]>([])
-  // 预警防抖表：zoneId → 该时间点之前不再弹窗；用 ref 避免触发重渲染
-  const mlAlertSnoozeRef = useRef<Record<string, number>>({})
+  // 预警防抖表：zoneId → 该时间点之前不再弹窗；用 ref 避免触发重渲染，
+  // 初始值从 localStorage 恢复，刷新页面不突破已有静默期
+  const mlAlertSnoozeRef = useRef<Record<string, number>>(loadMlAlertSnooze())
+  // 手动演示模式窗口表：zoneId → 手动模式截止时间（收到 isManual 读数时刷新）
+  const manualModeUntilRef = useRef<Record<string, number>>({})
+  // 自动数据分歧的控制台记录节流：同一区域一轮分歧只记录一次
+  const autoAnomalyLoggedRef = useRef<Record<string, boolean>>({})
+  // 人工观察待发队列：离线拍照不丢，重连（onConnect）时补发
+  const observationOutboxRef = useRef<PendingObservation[]>(
+    loadObservationOutbox(),
+  )
+  /** 把待发队列中的人工观察逐条补发；发送失败的条目重新入队 */
+  const flushObservationOutbox = useCallback(() => {
+    const client = getMqttClient()
+    if (!client.connected) return
+    const pending = observationOutboxRef.current
+    if (pending.length === 0) return
+    // 先清空再逐条发：publish 回调异步，失败在回调里重新入队，不重复发送
+    observationOutboxRef.current = []
+    saveObservationOutbox([])
+    for (const item of pending) {
+      client.publish(item.topic, item.payload, { qos: 1 }, (error) => {
+        if (!error) return
+        observationOutboxRef.current = [
+          ...observationOutboxRef.current,
+          item,
+        ].slice(-OBSERVATION_OUTBOX_MAX)
+        saveObservationOutbox(observationOutboxRef.current)
+      })
+    }
+  }, [])
   // 用 ref 持有最新回调，避免 MQTT 监听因依赖变化反复解绑
   const applyRemoteRef = useRef(applyRemoteDisposition)
+  const appendEvidenceRef = useRef(appendEventEvidence)
   const syncReadingRef = useRef(syncReading)
   const toastRef = useRef(toast)
+  const flushOutboxRef = useRef(flushObservationOutbox)
+  // state.events 的最新引用：addManualObservation 查未关闭事件时不闭包过期
+  const eventsRef = useRef(state.events)
   useEffect(() => {
     applyRemoteRef.current = applyRemoteDisposition
+    appendEvidenceRef.current = appendEventEvidence
     syncReadingRef.current = syncReading
     toastRef.current = toast
+    flushOutboxRef.current = flushObservationOutbox
+    eventsRef.current = state.events
   })
 
   // 历史变化时持久化（localStorage），刷新后可恢复
@@ -417,11 +561,21 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
 
     function onConnect() {
       setMqttStatus('online')
-      client.subscribe([SENSOR_TOPIC, EVENT_TOPIC, EVIDENCE_TOPIC], (error) => {
+      // 传感器为高频流（5 秒一条），QoS 0 即可，偶发丢点不影响趋势；
+      // 事件处置与人工观察是关键一次性消息，订阅 QoS 1 提高
+      // broker → 本端的送达保证。
+      client.subscribe(SENSOR_TOPIC, (error) => {
         if (error) {
-          console.error('[mqtt] subscribe failed:', error.message)
+          console.error('[mqtt] subscribe sensor failed:', error.message)
         }
       })
+      client.subscribe([EVENT_TOPIC, EVIDENCE_TOPIC], { qos: 1 }, (error) => {
+        if (error) {
+          console.error('[mqtt] subscribe event/evidence failed:', error.message)
+        }
+      })
+      // 补发离线期间排队的人工观察（如 iPad 拍照时 WebSocket 被系统挂起）
+      flushOutboxRef.current()
     }
     function onReconnect() {
       setMqttStatus('reconnecting')
@@ -442,6 +596,12 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       if (topic.startsWith(SENSOR_TOPIC_PREFIX)) {
         const reading = parseSensorMessage(parsed)
         if (!reading) return
+        // 手动注入的读数（isManual:true）：刷新该区域的手动演示窗口，
+        // 窗口内允许 ML 隐患预警弹窗；simulator 自动数据不刷新窗口
+        if (reading.isManual) {
+          manualModeUntilRef.current[reading.zoneId] =
+            Date.now() + MANUAL_MODE_WINDOW_MS
+        }
         setReadings((previous) => ({ ...previous, [reading.zoneId]: reading }))
         setHistories((previous) =>
           appendLivePoint(previous, reading.zoneId, {
@@ -490,11 +650,31 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
             -MAX_MANUAL_OBSERVATIONS,
           )
         })
+        // 现场取证闭环：照片挂入对应事件（eventId 精确匹配 →
+        // 该区域未关闭事件兜底；两端事件库独立，eventId 可能落空）。
+        // appendEventEvidence 内部按 photo.id 幂等去重。
+        const attach = appendEvidenceRef.current({
+          eventId: message.eventId,
+          zoneId: message.zoneId,
+          photo: {
+            id: message.id,
+            imageUrl: message.imageUrl,
+            fileName: message.fileName,
+            observedAt: message.observedAt,
+            operator: message.operator,
+            origin: message.origin,
+            clientId: message.clientId,
+          },
+        })
         const zoneName =
           ZONES.find((zone) => zone.zoneId === message.zoneId)?.shortName ??
           message.zoneId
+        const originLabel =
+          message.origin === 'H5' ? ' H5 现场端' : '其他终端'
         toastRef.current(
-          `收到${message.origin === 'H5' ? ' H5 现场端' : '其他终端'}的人工拍照留档（${zoneName}），已生成「人工观察」证据卡。`,
+          attach.ok
+            ? `收到${originLabel}的人工拍照留档（${zoneName}），已挂入事件 ${attach.eventId} 的「人工核实证据」。`
+            : `收到${originLabel}的人工拍照留档（${zoneName}），已生成「人工观察」证据卡。`,
           'info',
         )
       }
@@ -563,16 +743,59 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       setManualObservations((previous) =>
         [...previous, observation].slice(-MAX_MANUAL_OBSERVATIONS),
       )
+      // 现场取证闭环：关联该区域当前未关闭事件，报文携带 eventId 供接收端
+      // 优先精确匹配（两端事件库独立，匹配不上时接收端回退到区域未关闭事件）。
+      const activeEvent = eventsRef.current.find(
+        (item) => item.zoneId === zoneId && isActiveEventStatus(item.status),
+      )
+      const eventId = activeEvent?.eventId
       const client = getMqttClient()
-      const synced = client.connected
-      if (synced) {
-        client.publish(
-          `${EVIDENCE_TOPIC_PREFIX}${zoneId}`,
-          JSON.stringify({ kind: 'MANUAL_OBSERVATION', ...observation }),
-          { qos: 0 },
-        )
+      const online = client.connected
+      const topic = EVIDENCE_UPLOAD_TOPIC
+      const payload = JSON.stringify({
+        kind: 'MANUAL_OBSERVATION',
+        ...observation,
+        ...(eventId ? { eventId } : {}),
+      })
+      if (online) {
+        // QoS 1：拍照留档是关键一次性消息，要求 broker 确认接收
+        client.publish(topic, payload, { qos: 1 }, (error) => {
+          if (!error) return
+          // 发出即失败（连接抖动等）：转待发队列，重连后自动补发
+          observationOutboxRef.current = [
+            ...observationOutboxRef.current,
+            { topic, payload },
+          ].slice(-OBSERVATION_OUTBOX_MAX)
+          saveObservationOutbox(observationOutboxRef.current)
+        })
+      } else {
+        // 离线（iPad 拍照时 WebSocket 被系统挂起等）：入队并持久化，
+        // onConnect 时由 flushObservationOutbox 自动补发，页面刷新也不丢。
+        observationOutboxRef.current = [
+          ...observationOutboxRef.current,
+          { topic, payload },
+        ].slice(-OBSERVATION_OUTBOX_MAX)
+        saveObservationOutbox(observationOutboxRef.current)
       }
-      return { ok: true, synced }
+      // 本端同步挂事件（iPad 端事件库独立，挂不上不影响 Web 端接收侧挂载）
+      let attachedEventId: string | null = null
+      if (eventId) {
+        const attach = appendEvidenceRef.current({
+          eventId,
+          zoneId,
+          photo: {
+            id: observation.id,
+            imageUrl,
+            fileName: observation.fileName,
+            observedAt: observation.observedAt,
+            operator: observation.operator,
+            origin,
+            clientId: CLIENT_ID,
+          },
+        })
+        attachedEventId = attach.ok ? attach.eventId : null
+      }
+      return { ok: true, synced: online, eventId: attachedEventId }
     },
     [],
   )
@@ -585,6 +808,11 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     setMlAlert(null)
     setMlInterventions([])
     mlAlertSnoozeRef.current = {}
+    saveMlAlertSnooze({})
+    observationOutboxRef.current = []
+    saveObservationOutbox([])
+    manualModeUntilRef.current = {}
+    autoAnomalyLoggedRef.current = {}
   }, [])
 
   // 未关闭事件参与 Priority：当前数据正常但存在 HANDLING 等事件时，
@@ -618,14 +846,19 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
   }, [histories, activeEventsByZone])
 
   // ── ML 隐患预警与干预跟踪 ─────────────────────────────────────
-  // 触发条件严格限定为分歧状态：规则恰好 NORMAL 且 Z-score ML 判定
-  // ANOMALY（即仲裁矩阵的 STRICT_UNION）。规则已到 WATCH/ALERT/CRITICAL
-  // 的区域不弹此窗 —— 越限走常规事件流（ALERT 起自动建事件）。
+  // 触发条件严格限定为分歧状态 + 手动演示模式：
+  //   规则恰好 NORMAL 且 Z-score ML 判定 ANOMALY（仲裁矩阵 STRICT_UNION），
+  //   且该区域最近 60s 内收到过带 isManual:true 的读数（MQTTX 手动注入）。
+  // simulator 自动数据产生的分歧一律不弹窗，仅在控制台记录一次；
+  // 规则已到 WATCH/ALERT/CRITICAL 的区域也不弹 —— 越限走常规事件流。
   // 干预：recordMlIntervention 登记后该区域停止弹窗并持续跟踪；
   //   ML verdict 回到 NORMAL（Z-score 回落至 ±阈值内）→ 隐患自动解除；
   //   跟踪期间规则越限（ALERT/CRITICAL）→ 主事件流程接管，跟踪结束。
   // 弹窗：全局同时只弹一个（取 |z| 最大者），其余区域等当前弹窗被处理后
-  //   在下一轮数据到达时轮候；同一区域被关掉后 3 分钟内防抖不再弹。
+  //   在下一轮数据到达时轮候；同一区域被关掉后 3 分钟内防抖不再弹
+  //   （防抖表持久化到 localStorage，刷新页面不突破静默期）；
+  //   规则越限时自动关闭（移交事件流）；手动窗口内 ML 被自动数据拉回
+  //   正常时保持展示，避免演示弹窗一闪而过。
   useEffect(() => {
     const now = Date.now()
 
@@ -679,11 +912,29 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    // 阶段二：新隐患检测（仅 规则 NORMAL + ML ANOMALY 的分歧状态）
+    // 阶段二：新隐患检测（仅 规则 NORMAL + ML ANOMALY + 手动演示模式）
     let candidate: MlHiddenAlert | null = null
     for (const scan of scans) {
+      // 分歧解除后重置控制台节流标记，下一轮分歧可再记录
+      if (scan.ml?.verdict !== 'ANOMALY') {
+        autoAnomalyLoggedRef.current[scan.zoneId] = false
+      }
       if (scan.ruleStatus !== 'NORMAL') continue
       if (!scan.ml || scan.ml.verdict !== 'ANOMALY') continue
+      // 手动演示闸门：仅该区域 60s 窗口内收到过 isManual:true 读数才弹窗。
+      // simulator 自动数据的分歧一律不弹，控制台记录一次（防刷屏）。
+      if ((manualModeUntilRef.current[scan.zoneId] ?? 0) <= now) {
+        if (!autoAnomalyLoggedRef.current[scan.zoneId]) {
+          autoAnomalyLoggedRef.current[scan.zoneId] = true
+          console.info(
+            `[ml-alert] 自动数据分歧（按规则不弹窗）：${scan.zoneId}，` +
+              `maxAbsZ=${scan.ml.maxAbsZ?.toFixed(2) ?? '—'}。` +
+              `如需演示弹窗，请用 MQTTX 向 airguard/sensor/${scan.zoneId} ` +
+              `发送带 "isManual": true 的读数。`,
+          )
+        }
+        continue
+      }
       if ((mlAlertSnoozeRef.current[scan.zoneId] ?? 0) > now) continue
       // 已登记干预的区域在隐患解除前不再弹窗
       if (mlInterventions.some((item) => item.zoneId === scan.zoneId)) continue
@@ -700,11 +951,30 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
         }
       }
     }
-    if (!candidate) return
+    // 正在展示的弹窗是否仍应展示。
+    // 规则越限（移交事件流）→ 立即关闭；ML 仍 ANOMALY → 保持。
+    // 手动演示窗口内 ML 被 simulator 下一条自动数据拉回正常时也保持 ——
+    // 否则手动注入触发后 5 秒内弹窗就被自动数据冲掉，无法完成演示。
+    const isTriggering = (zoneId: string): boolean => {
+      const scan = scans.find((entry) => entry.zoneId === zoneId)
+      if (!scan || scan.ruleStatus !== 'NORMAL') return false
+      if (scan.ml?.verdict === 'ANOMALY') return true
+      return (manualModeUntilRef.current[zoneId] ?? 0) > now
+    }
+
+    if (!candidate) {
+      setMlAlert((previous) =>
+        previous && !isTriggering(previous.zoneId) ? null : previous,
+      )
+      return
+    }
     const next: MlHiddenAlert = candidate
     setMlAlert((previous) => {
-      // 已有其他区域的弹窗在展示时不抢占，等用户处理后再轮候
-      if (previous && previous.zoneId !== next.zoneId) return previous
+      // 已有其他区域的弹窗在展示时不抢占，等用户处理后再轮候；
+      // 但若它已失效，则关闭并让位给新候选
+      if (previous && previous.zoneId !== next.zoneId) {
+        return isTriggering(previous.zoneId) ? previous : next
+      }
       // 同区域持续偏离：刷新指标读数，但保留首次检测时间
       return previous ? { ...next, detectedAt: previous.detectedAt } : next
     })
@@ -712,6 +982,8 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
 
   const dismissMlAlert = useCallback((zoneId: string) => {
     mlAlertSnoozeRef.current[zoneId] = Date.now() + ML_ALERT_SNOOZE_MS
+    // 持久化防抖表：刷新页面后静默期仍然有效
+    saveMlAlertSnooze(mlAlertSnoozeRef.current)
     setMlAlert((previous) =>
       previous && previous.zoneId === zoneId ? null : previous,
     )

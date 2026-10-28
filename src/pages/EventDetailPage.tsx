@@ -36,7 +36,10 @@ import {
   type ChartMarker,
 } from '../components/charts/MetricTrendChart'
 import { useAppStore } from '../state/AppStore'
-import { useLiveData } from '../state/LiveDataContext'
+import {
+  useLiveData,
+  type ManualObservation,
+} from '../state/LiveDataContext'
 import { useToast } from '../state/ToastContext'
 import { DispositionButton } from '../components/domain/DispositionButton'
 import { getZone } from '../data/zones'
@@ -152,9 +155,12 @@ export function EventDetailPage() {
     recordAction,
     reEvaluateEvent,
   } = useAppStore()
-  const { readings, histories, priorities } = useLiveData()
+  const { readings, histories, priorities, manualObservations } = useLiveData()
   const { toast } = useToast()
   const [actionOpen, setActionOpen] = useState(false)
+  // 现场取证照片的放大查看（点击缩略图打开）
+  const [zoomObservation, setZoomObservation] =
+    useState<ManualObservation | null>(null)
   const [actionType, setActionType] = useState<ActionType>('INSPECTION')
   const [actionTitle, setActionTitle] = useState('')
   const [actionNote, setActionNote] = useState('')
@@ -190,6 +196,12 @@ export function EventDetailPage() {
   }
 
   const zone = getZone(event.zoneId)
+  // 现场人工取证：本会话内该区域（含 H5 拍照经 MQTT 回传）的全部人工观察。
+  // 与主栏「人工核实证据」不同：这里按区域精准匹配、不依赖事件挂载 ——
+  // ML 隐患阶段（规则未越限、尚无事件）拍的照片也能在本页看到。
+  const zoneObservations = manualObservations.filter(
+    (obs) => obs.zoneId === event.zoneId,
+  )
   const liveReading = readings[event.zoneId]
   const priority = priorityForZone(priorities, event.zoneId) ?? {
     zoneId: event.zoneId,
@@ -435,6 +447,41 @@ export function EventDetailPage() {
               与 Action 后验样本使用同一实时业务状态。
             </p>
           </SectionCard>
+
+          {(event.evidencePhotos ?? []).length > 0 && (
+            <SectionCard
+              title="人工核实证据"
+              subtitle="现场取证照片（H5 现场端拍照 / Web 上传，经 MQTT 取证 Topic 回传）；仅作现场佐证，不参与 Recovery 判定。"
+              action={
+                <span className="card-meta">
+                  {(event.evidencePhotos ?? []).length} 张
+                </span>
+              }
+            >
+              <div className="event-evidence-grid">
+                {(event.evidencePhotos ?? []).map((photo) => (
+                  <figure className="evidence-card__photo" key={photo.id}>
+                    {photo.imageUrl ? (
+                      <img
+                        src={photo.imageUrl}
+                        alt={`${zone.shortName}现场取证照片（${photo.fileName}）`}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="event-evidence-grid__fallback">
+                        拍摄端浏览器无法解码该格式，仅保留元数据（
+                        {photo.fileName}）
+                      </div>
+                    )}
+                    <figcaption>
+                      {photo.origin === 'H5' ? 'H5 现场端' : 'Web 工作台'} ·{' '}
+                      {photo.operator} · {formatDateTime(photo.observedAt)}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </SectionCard>
+          )}
 
           {event.limitations.length > 0 && (
             <Notice tone="warning" title="证据与降级限制">
@@ -873,6 +920,46 @@ export function EventDetailPage() {
             </div>
           </SectionCard>
 
+          <SectionCard
+            title="现场人工取证"
+            subtitle="H5 现场端拍照经 MQTT 回传，仅显示本区域；点击照片放大查看。"
+          >
+            {zoneObservations.length === 0 ? (
+              <p className="field-evidence-empty">
+                暂无现场取证照片，请在 H5 现场端拍照上传
+              </p>
+            ) : (
+              <div className="field-evidence-list">
+                {zoneObservations.map((obs) => (
+                  <figure className="field-evidence-item" key={obs.id}>
+                    <button
+                      type="button"
+                      className="field-evidence-item__button"
+                      onClick={() => obs.imageUrl && setZoomObservation(obs)}
+                      disabled={!obs.imageUrl}
+                      title={obs.imageUrl ? '点击放大查看' : '无可用图片'}
+                    >
+                      {obs.imageUrl ? (
+                        <img
+                          src={obs.imageUrl}
+                          alt={`${zone.shortName}现场取证照片（${obs.fileName}）`}
+                          loading="lazy"
+                        />
+                      ) : (
+                        <span className="field-evidence-item__fallback">
+                          拍摄端浏览器无法解码，仅保留元数据（{obs.fileName}）
+                        </span>
+                      )}
+                    </button>
+                    <figcaption>
+                      来自现场巡检员的取证记录 · {formatDateTime(obs.observedAt)}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
           <SectionCard title="关联运行" subtitle="按照保存时间倒序">
             {allRuns.length === 0 ? (
               <EmptyState
@@ -984,6 +1071,28 @@ export function EventDetailPage() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* 现场取证照片放大查看：ESC / 点遮罩关闭 */}
+      <Modal
+        open={zoomObservation !== null}
+        onClose={() => setZoomObservation(null)}
+        title="现场取证照片"
+        description={
+          zoomObservation
+            ? `${getZone(zoomObservation.zoneId).name} · ${formatDateTime(
+                zoomObservation.observedAt,
+              )} · ${zoomObservation.operator}`
+            : undefined
+        }
+        size="lg"
+      >
+        {zoomObservation?.imageUrl && (
+          <figure className="field-evidence-zoom">
+            <img src={zoomObservation.imageUrl} alt="现场取证照片大图" />
+            <figcaption>来自现场巡检员的取证记录</figcaption>
+          </figure>
+        )}
       </Modal>
 
       <div className="event-detail-footnote">

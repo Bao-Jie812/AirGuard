@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Camera,
   ClipboardCheck,
@@ -16,10 +17,14 @@ import { useAppStore } from '../state/AppStore'
 import { useLiveData } from '../state/LiveDataContext'
 import { useToast } from '../state/ToastContext'
 import { getZone, ZONES } from '../data/zones'
-import { getActiveEvents, getEventsForZone } from '../state/selectors'
+import {
+  getActiveEventForZone,
+  getActiveEvents,
+  getEventsForZone,
+} from '../state/selectors'
 import { METRIC_META, ZONE_COLORS } from '../domain/constants'
 import { formatNumber } from '../domain/format'
-import { metricStatus } from '../domain/priority'
+import { effectiveZoneStatus, metricStatus } from '../domain/priority'
 import { prepareChartSeries } from '../domain/chartSeries'
 import type { MetricKey } from '../data/types'
 import {
@@ -45,10 +50,21 @@ const MQTT_STATUS_TEXT = {
 
 export function H5Page() {
   const { mqttStatus, readings, priorities, topZoneId } = useLiveData()
-  const [tab, setTab] = useState<H5Tab>('overview')
+  const [searchParams] = useSearchParams()
+  // 大屏 ML 预警「前往现场拍照取证」复制的直达链接：?zone=xxx&tab=scene
+  // 仅在打开页面时取一次（useState 初值），之后用户可自由切换
+  const urlZone = searchParams.get('zone')
+  const urlTab = searchParams.get('tab')
+  const [tab, setTab] = useState<H5Tab>(
+    urlTab === 'scene' ? 'scene' : 'overview',
+  )
   const stableTopZoneId =
     topZoneId ?? priorities[0]?.zoneId ?? ZONES[0].zoneId
-  const [zoneId, setZoneId] = useState(stableTopZoneId)
+  const [zoneId, setZoneId] = useState(
+    urlZone && ZONES.some((zone) => zone.zoneId === urlZone)
+      ? urlZone
+      : stableTopZoneId,
+  )
 
   const priority =
     priorities.find((item) => item.zoneId === zoneId) ?? priorities[0]
@@ -261,9 +277,12 @@ function OverviewTab({
   priorityRank: number
 }) {
   const { priorities } = useLiveData()
+  const { state } = useAppStore()
   const zone = getZone(zoneId)
   const priority = priorities.find((item) => item.zoneId === zoneId)
   const topZone = getZone(topZoneId)
+  // 与空间地图同源：未关闭事件覆盖瞬时指标档位，避免得分高企时徽章仍写「正常」
+  const activeEvent = getActiveEventForZone(state, zoneId)
 
   return (
     <>
@@ -286,7 +305,14 @@ function OverviewTab({
       >
         <div className="h5-focus__head">
           <span className="h5-eyebrow">选中区域</span>
-          {priority && <ZoneStatusBadge status={priority.zoneStatus} />}
+          {priority && (
+            <ZoneStatusBadge
+              status={effectiveZoneStatus(
+                priority.zoneStatus,
+                activeEvent ? [activeEvent] : [],
+              )}
+            />
+          )}
         </div>
         <h1>{zone.shortName}</h1>
         <p className="h5-focus__building">
@@ -390,10 +416,12 @@ function HandleTab({
 
 function SceneTab({ zoneId }: { zoneId: string }) {
   const { readings, priorities, addManualObservation } = useLiveData()
+  const { state } = useAppStore()
   const { toast } = useToast()
   const zone = getZone(zoneId)
   const reading = readings[zoneId]
   const priority = priorities.find((item) => item.zoneId === zoneId)
+  const activeEvent = getActiveEventForZone(state, zoneId)
   const metrics = {
     pm25: reading?.pm25 ?? null,
     co2: reading?.co2 ?? null,
@@ -420,16 +448,20 @@ function SceneTab({ zoneId }: { zoneId: string }) {
     if (!file) return
     if (photoUrl) URL.revokeObjectURL(photoUrl)
     setPhotoUrl(URL.createObjectURL(file))
-    // 生成人工观察证据并经 MQTT 同步压缩图到 Web 工作台
+    // 生成人工观察证据：关联该区域未关闭事件（若有），压缩图经 MQTT
+    // 取证 Topic 回传 Web 工作台并自动挂入事件的「人工核实证据」
     const result = await addManualObservation({ zoneId, file, origin: 'H5' })
     if (!result.ok) {
       toast(result.message, 'warning')
       return
     }
+    const syncText = result.synced
+      ? '经 MQTT 同步到 Web 工作台。'
+      : 'MQTT 离线，已存待发队列，连接恢复后自动同步。'
     toast(
-      result.synced
-        ? '已生成「人工观察」证据，压缩图经 MQTT 同步到 Web 工作台。'
-        : '已生成「人工观察」证据；MQTT 离线，仅本端可见。',
+      result.eventId
+        ? `已生成「人工观察」证据并挂入事件 ${result.eventId}，${syncText}`
+        : `已生成「人工观察」证据（该区域暂无未关闭事件，仅全局留档），${syncText}`,
       'success',
     )
   }
@@ -472,7 +504,12 @@ function SceneTab({ zoneId }: { zoneId: string }) {
       <section className="h5-section h5-scene-summary">
         <div className="h5-section__head">
           <h2>现场记录</h2>
-          <ZoneStatusBadge status={priority?.zoneStatus ?? 'NORMAL'} />
+          <ZoneStatusBadge
+            status={effectiveZoneStatus(
+              priority?.zoneStatus ?? 'NORMAL',
+              activeEvent ? [activeEvent] : [],
+            )}
+          />
         </div>
         <p className="h5-scene-summary__name">{zone.name}</p>
         <p className="h5-scene-summary__meta">
@@ -510,7 +547,11 @@ function SceneTab({ zoneId }: { zoneId: string }) {
         {photoUrl && (
           <figure className="h5-photo-preview">
             <img src={photoUrl} alt="现场照片预览" />
-            <figcaption>现场照片预览 · 已同步 Web 工作台</figcaption>
+            <figcaption>
+              现场照片预览
+              {activeEvent ? ` · 回传后挂入事件 ${activeEvent.eventId}` : ''} ·
+              同步 Web 工作台
+            </figcaption>
           </figure>
         )}
       </section>

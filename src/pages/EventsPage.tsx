@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   ArrowRight,
   ClipboardList,
+  Fan,
   Search,
   ShieldCheck,
 } from 'lucide-react'
@@ -11,6 +12,7 @@ import { SectionCard } from '../components/ui/Card'
 import { EmptyState } from '../components/ui/EmptyState'
 import { buttonClass } from '../components/ui/Button'
 import {
+  Badge,
   EventStatusBadge,
   ScenarioBadge,
   SeverityBadge,
@@ -22,6 +24,7 @@ import {
   formatDateTime,
   formatRelativeToNow,
 } from '../domain/format'
+import { formatZScore } from '../domain/anomaly'
 import { SCENARIO_LABELS } from '../domain/constants'
 import { isActiveEventStatus } from '../data/events'
 import {
@@ -33,10 +36,19 @@ type StatusFilter = 'ALL' | 'ACTIVE' | 'RECOVERED'
 
 export function EventsPage() {
   const { state } = useAppStore()
-  const { mqttStatus, readings } = useLiveData()
+  const { mqttStatus, readings, mlInterventions } = useLiveData()
+  const [searchParams] = useSearchParams()
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL')
   const [zoneFilter, setZoneFilter] = useState('ALL')
   const [query, setQuery] = useState('')
+
+  // ML 隐患预警「前往查看详情」等入口经 ?zone= 带入区域筛选（单向同步 URL → 筛选器）
+  const urlZone = searchParams.get('zone')
+  useEffect(() => {
+    if (urlZone && ZONES.some((zone) => zone.zoneId === urlZone)) {
+      setZoneFilter(urlZone)
+    }
+  }, [urlZone])
 
   const filtered = useMemo(() => {
     return [...state.events]
@@ -141,6 +153,52 @@ export function EventsPage() {
           <span>处置动作多端同步</span>
         </div>
       </div>
+
+      {mlInterventions.length > 0 && (
+        <SectionCard
+          title="ML 隐患干预 · 待解除"
+          subtitle="规则尚未越限时登记的轻量干预，不创建事件；Z-score 回落至正常区间后隐患自动解除。"
+          action={
+            <span className="card-meta">
+              {mlInterventions.length} 项跟踪中
+            </span>
+          }
+        >
+          <ul className="ml-intervention-list">
+            {mlInterventions.map((item) => {
+              const zone = getZone(item.zoneId)
+              return (
+                <li className="ml-intervention-item" key={item.id}>
+                  <span
+                    className="ml-intervention-item__icon"
+                    aria-hidden="true"
+                  >
+                    <Fan size={16} />
+                  </span>
+                  <div className="ml-intervention-item__text">
+                    <strong>
+                      {zone.name} · {item.label}
+                    </strong>
+                    <p>
+                      登记于 {formatDateTime(item.actionAt)} · {item.operator} ·
+                      干预时{' '}
+                      {item.metrics
+                        .map(
+                          (metric) =>
+                            `${metric.label} z=${formatZScore(metric.zScore)}`,
+                        )
+                        .join('，')}
+                    </p>
+                  </div>
+                  <Badge tone="warning" dot>
+                    跟踪中 · Z 回落自动解除
+                  </Badge>
+                </li>
+              )
+            })}
+          </ul>
+        </SectionCard>
+      )}
 
       <SectionCard
         title="全部事件"

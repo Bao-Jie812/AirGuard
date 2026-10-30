@@ -1,37 +1,143 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FlaskConical, Siren, Undo2, X } from 'lucide-react'
-import { CLIENT_ID } from '../../services/mqttClient'
+import {
+  CLIENT_ID,
+  getMqttClient,
+  SENSOR_TOPIC_PREFIX,
+} from '../../services/mqttClient'
 import { useLiveData } from '../../state/LiveDataContext'
 import { useToast } from '../../state/ToastContext'
 import { ZONE_COLORS } from '../../domain/constants'
+import { getZoneName } from '../../data/zones'
 import { cn } from '../../domain/format'
 
+const ESCALATION_DELAY_MS = 8_000
+
+// 两项指标均低于当前 WATCH 阈值（PM2.5 35、CO₂ 800），
+// 保证第一阶段是「规则 NORMAL + ML ANOMALY」，而不是直接触发规则告警。
+const HIDDEN_RISK_READING = { pm25: 34, co2: 799 } as const
+const SEVERE_READING = { pm25: 150, co2: 1600 } as const
+
+interface PendingEscalation {
+  timer: number
+  triggeredAt: number
+}
+
+/** 发布真实 MQTT 演示读数；前端状态和事件仍统一由收到的 MQTT 数据驱动。 */
+function publishDemoReading(
+  zoneId: string,
+  values: { pm25: number; co2: number; crowdLevel: number },
+): boolean {
+  const client = getMqttClient()
+  if (!client.connected) return false
+  client.publish(
+    `${SENSOR_TOPIC_PREFIX}${zoneId}`,
+    JSON.stringify({
+      zoneId,
+      ...values,
+      time: new Date().toISOString(),
+      isManual: true,
+      source: 'DEMO_CONTROL_PANEL',
+    }),
+    { qos: 0 },
+  )
+  return true
+}
+
 function useDemoControl() {
-  const { publishControl, mqttStatus } = useLiveData()
+  const { publishControl, mqttStatus, mlInterventions, readings } = useLiveData()
   const { toast } = useToast()
   const online = mqttStatus === 'online'
+  const pendingEscalationsRef = useRef<Map<string, PendingEscalation>>(new Map())
+  const interventionsRef = useRef(mlInterventions)
+  const readingsRef = useRef(readings)
+  useEffect(() => {
+    interventionsRef.current = mlInterventions
+    readingsRef.current = readings
+  }, [mlInterventions, readings])
+
+  function cancelEscalation(zoneId: string) {
+    const pending = pendingEscalationsRef.current.get(zoneId)
+    if (!pending) return
+    window.clearTimeout(pending.timer)
+    pendingEscalationsRef.current.delete(zoneId)
+  }
+
+  function cancelAllEscalations() {
+    for (const pending of pendingEscalationsRef.current.values()) {
+      window.clearTimeout(pending.timer)
+    }
+    pendingEscalationsRef.current.clear()
+  }
+
+  // 面板卸载后不再补发第二阶段数据，避免离开页面后演示仍在后台恶化。
+  useEffect(
+    () => () => {
+      for (const pending of pendingEscalationsRef.current.values()) {
+        window.clearTimeout(pending.timer)
+      }
+      pendingEscalationsRef.current.clear()
+    },
+    [],
+  )
 
   function triggerAlert(zoneId: string) {
     if (!online) {
       toast('MQTT 离线，指令未能发出。', 'info')
       return
     }
-    publishControl({
-      action: 'TRIGGER_ALERT',
-      zoneId,
-      at: new Date().toISOString(),
-      clientId: CLIENT_ID,
+
+    // 同一区域重复点击时重新开始剧本，不保留上一次未执行的恶化定时器。
+    cancelEscalation(zoneId)
+    const triggeredAt = Date.now()
+    const crowdLevel = readingsRef.current[zoneId]?.crowdLevel ?? 0.3
+    const published = publishDemoReading(zoneId, {
+      ...HIDDEN_RISK_READING,
+      crowdLevel,
     })
-    // 不在前端伪造状态或事件：点击只负责发送控制指令。
-    // 模拟器收到后会立即推送一条 ALERT 级读数，事件由 syncReading
-    // 在真实 MQTT 数据达到阈值时自动创建。
+    if (!published) {
+      toast('MQTT 连接已断开，临界数据未能发出。', 'info')
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      const pending = pendingEscalationsRef.current.get(zoneId)
+      // 只执行当前这一轮剧本，忽略已被重复点击替换的旧定时器。
+      if (!pending || pending.triggeredAt !== triggeredAt) return
+      pendingEscalationsRef.current.delete(zoneId)
+
+      // 只认本轮触发之后新增的干预，避免历史干预记录误取消本次演示。
+      const intervened = interventionsRef.current.some(
+        (item) =>
+          item.zoneId === zoneId &&
+          Date.parse(item.actionAt) >= pending.triggeredAt,
+      )
+      if (intervened) return
+
+      const latestCrowdLevel =
+        readingsRef.current[zoneId]?.crowdLevel ?? crowdLevel
+      const escalated = publishDemoReading(zoneId, {
+        ...SEVERE_READING,
+        crowdLevel: latestCrowdLevel,
+      })
+      toast(
+        escalated
+          ? `${getZoneName(zoneId)} 在 8 秒内未记录干预，已发布严重超标数据，等待 MQTT 确认后转入红色报警。`
+          : 'MQTT 连接已断开，严重超标数据未能发出。',
+        'info',
+      )
+    }, ESCALATION_DELAY_MS)
+    pendingEscalationsRef.current.set(zoneId, { timer, triggeredAt })
+
     toast(
-      `已向 ${zoneId} 发送异常指令，等待 MQTT 数据确认后自动创建事件；若 5 秒内无变化，请确认模拟器正在运行。`,
+      `已发布${getZoneName(zoneId)}临界数据（CO₂ ${HIDDEN_RISK_READING.co2} ppm，PM2.5 ${HIDDEN_RISK_READING.pm25} μg/m³）。请先处理 ML 隐患预警；8 秒内未记录干预将自动恶化。`,
       'info',
     )
   }
 
   function recoverAll() {
+    // 恢复操作同时终止所有待执行的第二阶段，防止恢复后再次自动超标。
+    cancelAllEscalations()
     publishControl({
       action: 'TRIGGER_RECOVERY',
       at: new Date().toISOString(),
@@ -39,8 +145,8 @@ function useDemoControl() {
     })
     toast(
       online
-        ? '已发送恢复指令：全部区域立即恢复发送正常数据。'
-        : 'MQTT 离线，指令未能发出。',
+        ? '已取消待执行的自动恶化，并发送恢复指令：全部区域恢复发送正常数据。'
+        : 'MQTT 离线，恢复指令未能发出。',
       'info',
     )
   }
@@ -53,6 +159,8 @@ const TRIGGER_BUTTONS = [
   { zoneId: 'zone-s', label: '触发教学区异常' },
   { zoneId: 'zone-n', label: '触发宿舍异常' },
 ] as const
+
+const TRIGGER_TITLE = '先发布临界数据触发 ML 预警；8 秒未干预后自动发布严重超标数据'
 
 /**
  * 演示控制条（常驻可见版）：
@@ -77,7 +185,7 @@ export function DemoControlBar() {
           }}
           onClick={() => triggerAlert(button.zoneId)}
           disabled={!online}
-          title={online ? `让 ${button.zoneId} 进入异常模式（3 次发送）` : 'MQTT 离线不可用'}
+          title={online ? TRIGGER_TITLE : 'MQTT 离线不可用'}
         >
           <Siren size={14} />
           {button.label}
@@ -88,7 +196,7 @@ export function DemoControlBar() {
         className="demo-bar__btn demo-bar__btn--recover"
         onClick={recoverAll}
         disabled={!online}
-        title={online ? '全部区域立即恢复发送正常数据' : 'MQTT 离线不可用'}
+        title={online ? '取消自动恶化，全部区域立即恢复发送正常数据' : 'MQTT 离线不可用'}
       >
         <Undo2 size={14} />
         一键恢复正常
@@ -130,7 +238,7 @@ export function DemoControlPanel() {
             </button>
           </div>
           <p className="demo-control__hint">
-            通过 MQTT 指令控制模拟器场景（airguard/control）
+            递进剧本：临界数据 → ML 预警 → 8 秒未干预则严重超标
           </p>
           <div className="demo-control__actions">
             {TRIGGER_BUTTONS.map((button) => (
@@ -143,7 +251,7 @@ export function DemoControlPanel() {
                 }}
                 onClick={() => triggerAlert(button.zoneId)}
                 disabled={!online}
-                title={online ? button.label : 'MQTT 离线不可用'}
+                title={online ? TRIGGER_TITLE : 'MQTT 离线不可用'}
               >
                 <Siren size={14} />
                 {button.label}
@@ -154,7 +262,7 @@ export function DemoControlPanel() {
               className="demo-control__btn demo-control__btn--recover"
               onClick={recoverAll}
               disabled={!online}
-              title={online ? '全部区域恢复正常' : 'MQTT 离线不可用'}
+              title={online ? '取消自动恶化，全部区域恢复正常' : 'MQTT 离线不可用'}
             >
               <Undo2 size={14} />
               一键恢复正常

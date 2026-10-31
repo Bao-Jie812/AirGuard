@@ -23,7 +23,7 @@ import {
   ZONE_COLORS,
 } from '../domain/constants'
 import { formatDateTime, formatDuration, formatNumber } from '../domain/format'
-import { priorityLevelText } from '../domain/priority'
+import { effectiveZoneStatus, priorityLevelText } from '../domain/priority'
 import { useAppStore } from '../state/AppStore'
 import { useLiveData } from '../state/LiveDataContext'
 import {
@@ -94,6 +94,11 @@ export function OverviewPage() {
   const activeFocusEvent = getActiveEventForZone(state, selectedZoneId)
   const focusEvent =
     activeFocusEvent ?? getEventsForZone(state, selectedZoneId)[0]
+  // 关注卡状态与地图同源：未关闭事件覆盖瞬时指标档位（只升不降）
+  const focusStatus = effectiveZoneStatus(
+    selectedPriority.zoneStatus,
+    activeFocusEvent ? [activeFocusEvent] : [],
+  )
   // 没有未关闭事件时，卡片下方展示的只是历史事件（通常是 RECOVERED）
   const focusEventIsHistorical = !activeFocusEvent && Boolean(focusEvent)
   const exceptions = getEvidenceExceptions(ctxByZone)
@@ -325,7 +330,7 @@ export function OverviewPage() {
 
         <div className="overview-side">
           <section
-            className={`focus-card focus-card--${selectedPriority.zoneStatus.toLowerCase()}`}
+            className={`focus-card focus-card--${focusStatus.toLowerCase()}`}
             style={{
               ['--zone-color' as string]: ZONE_COLORS[selectedZoneId],
             }}
@@ -343,7 +348,7 @@ export function OverviewPage() {
                   {selectedZone.building}
                 </p>
               </div>
-              <ZoneStatusBadge status={selectedPriority.zoneStatus} />
+              <ZoneStatusBadge status={focusStatus} />
             </div>
 
             <div className="focus-score">

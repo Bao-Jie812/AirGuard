@@ -145,8 +145,8 @@ function buildManualEvidence(obs: ManualObservation): EvidenceItem {
       {
         label: '同步链路',
         value: obs.viaMqtt
-          ? `MQTT 接收 · airguard/evidence/${obs.zoneId}`
-          : '本地上传 + MQTT 发布',
+          ? 'MQTT 接收 · airguard/evidence/upload'
+          : '本地上传 + MQTT 发布 · airguard/evidence/upload',
       },
       {
         label: '图片',
@@ -292,10 +292,13 @@ export function EvidencePage() {
       toast(result.message, 'warning')
       return
     }
+    const syncText = result.synced
+      ? '压缩图经 MQTT 同步到其他终端。'
+      : 'MQTT 离线，已存待发队列，连接恢复后自动同步。'
     toast(
-      result.synced
-        ? `已生成「人工观察」证据卡（${zone.shortName}），压缩图经 MQTT 同步到其他终端。`
-        : `已生成「人工观察」证据卡（${zone.shortName}）；MQTT 离线，仅本端可见。`,
+      result.eventId
+        ? `已生成「人工观察」证据卡并挂入事件 ${result.eventId}（${zone.shortName}），${syncText}`
+        : `已生成「人工观察」证据卡（${zone.shortName}，暂无未关闭事件可关联），${syncText}`,
       'success',
     )
   }

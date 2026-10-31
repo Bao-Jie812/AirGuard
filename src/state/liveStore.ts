@@ -6,6 +6,8 @@
  * Action 前后对比、趋势图、Priority 评估全部以这里的数据为准。
  */
 
+import { zoneStatusFromMetrics } from '../domain/priority'
+
 export interface LivePoint {
   ts: number
   pm25: number
@@ -14,12 +16,16 @@ export interface LivePoint {
 }
 
 /**
- * v2：旧版本（v1）曾把前几次演示的异常数据持久化下来，
- * 刷新后仍参与 Priority 计算，导致启动即报 3 个区域异常。
- * 提升键名版本即一次性丢弃这些旧历史。
+ * v3：v2 及更早版本会把上一段演示的异常（事故）数据恢复为实时历史，
+ * 成为 ML（Z-score）的污染基线 —— 当前正常读数相对异常基线被判
+ * ANOMALY，导致页面启动即误报隐患弹窗。升版本一次性丢弃旧历史；
+ * loadLiveHistory 另有基线健康检查，持续防护后续污染。
  */
-const STORAGE_KEY = 'airguard.live.history.v2'
-const LEGACY_STORAGE_KEYS = ['airguard.live.history.v1']
+const STORAGE_KEY = 'airguard.live.history.v3'
+const LEGACY_STORAGE_KEYS = [
+  'airguard.live.history.v1',
+  'airguard.live.history.v2',
+]
 
 /** 每区域最多保留 720 点（5 秒间隔 ≈ 最近 60 分钟） */
 export const MAX_POINTS_PER_ZONE = 720
@@ -41,6 +47,11 @@ const SESSION_STALE_MS = 60_000
 
 /** 相邻点间隔超过 30 秒视为断档：只保留最后一段连续数据 */
 const SEGMENT_GAP_MS = 30_000
+
+/** 基线健康检查窗口：取恢复段末尾最近 12 点（与 ML 最小样本数对齐） */
+const BASELINE_HEALTH_WINDOW = 12
+/** 窗口内过半数点按规则阈值已越限 → 该段是异常（事故）数据，不能当正常基线 */
+const BASELINE_CONTAMINATION_RATIO = 0.5
 
 type LiveHistoryMap = Record<string, LivePoint[]>
 
@@ -110,6 +121,26 @@ function readStoredHistory(): LiveHistoryMap {
 }
 
 /**
+ * 基线污染检查：恢复段的末尾窗口若过半数点按规则阈值已越限
+ * （WATCH 及以上），说明这是上一段异常（事故）数据而非正常基线。
+ * 若把它恢复为实时历史，ML 会以异常段为基线，把当前正常读数误判为
+ * 显著偏离（ANOMALY）——启动即误报。被污染的段不进入实时状态，
+ * 但仍保留在归档中，历史图表与 Action 前后对比不受影响。
+ */
+function isContaminatedBaseline(points: LivePoint[]): boolean {
+  const windowPoints = points.slice(-BASELINE_HEALTH_WINDOW)
+  const abnormalCount = windowPoints.filter(
+    (point) =>
+      zoneStatusFromMetrics({
+        pm25: point.pm25,
+        co2: point.co2,
+        crowdDensity: point.crowdLevel,
+      }) !== 'NORMAL',
+  ).length
+  return abnormalCount > windowPoints.length * BASELINE_CONTAMINATION_RATIO
+}
+
+/**
  * 恢复「当前会话」的实时历史。
  * 旧会话数据不进入实时状态，避免启动瞬间用上一次的异常值把区域染红；
  * 这些数据仍保留在归档里，供历史图表与 Action 前后对比使用。
@@ -131,7 +162,11 @@ export function loadLiveHistory(): LiveHistoryMap {
         break
       }
     }
-    result[zoneId] = points.slice(startIndex).slice(-MAX_POINTS_PER_ZONE)
+    const segment = points.slice(startIndex).slice(-MAX_POINTS_PER_ZONE)
+    // 基线被异常段污染时不恢复为实时历史，ML / Priority 从干净状态重新累积；
+    // 若区域此刻真的仍在异常，新数据到达后规则通道会在数秒内重新建事件。
+    if (isContaminatedBaseline(segment)) continue
+    result[zoneId] = segment
   }
   return result
 }

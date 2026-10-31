@@ -2119,6 +2119,109 @@
   border-top: 1px solid var(--border);
 }
 
+/* 事件详情「人工核实证据」照片网格（复用 evidence-card__photo 单卡样式） */
+.event-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.event-evidence-grid .evidence-card__photo {
+  margin: 0;
+}
+
+.event-evidence-grid__fallback {
+  padding: 28px 12px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* 事件详情右侧栏「现场人工取证」卡片 */
+.field-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field-evidence-item {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-soft);
+}
+
+.field-evidence-item__button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+}
+
+.field-evidence-item__button:disabled {
+  cursor: default;
+}
+
+.field-evidence-item__button img {
+  display: block;
+  max-width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  /* 图片在卡片内水平居中 */
+  margin: 0 auto;
+}
+
+.field-evidence-item figcaption {
+  padding: 5px 8px;
+  font-size: 8.5px;
+  color: var(--text-3);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.field-evidence-item__fallback {
+  display: block;
+  padding: 24px 10px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+.field-evidence-empty {
+  margin: 0;
+  padding: 18px 10px;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+}
+
+/* 现场取证照片放大查看（Modal 内） */
+.field-evidence-zoom {
+  margin: 0;
+  text-align: center;
+}
+
+.field-evidence-zoom img {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  /* 大图在弹窗内水平居中 */
+  margin: 0 auto;
+  border-radius: var(--radius-sm);
+}
+
+.field-evidence-zoom figcaption {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
 .manual-boundary svg {
   flex: none;
   margin-top: 1px;

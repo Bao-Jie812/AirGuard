@@ -7,9 +7,14 @@ import { METRIC_META, METRIC_ORDER } from './constants'
  * 算法：基于 Z-score 的滑动窗口异常检测。
  *   对每个指标，取「当前点之前」的最近 N 个历史点（来自 localStorage
  *   持久化的实时历史，经 LiveDataContext 注入），计算均值 μ 与标准差 σ；
- *   当前读数 x 的标准分数 z = (x − μ) / σ。
+ *   当前读数 x 的标准分数 z = (x − μ) / max(σ, 指标噪声地板)。
  *   |z| > 阈值（默认 2σ）→ 判定 ANOMALY（显著偏离历史分布），
  *   否则 NORMAL（符合历史规律）。
+ *
+ * 边界保护：长时间平稳运行时历史近乎恒定，σ→0。若直接除以 σ，
+ * 1 个传感器分辨率的正常波动也会算出 |z|→∞ 的伪异常，导致误报弹窗。
+ * 因此分母设有每指标的最小有效标准差（噪声地板，见 METRIC_MIN_STDEV）：
+ * 微小波动永远判正常，显著偏离（数倍于噪声地板）依然能被检出。
  *
  * 与固定规则（domain/priority.ts 的阈值分级）相互独立：
  * 规则看「绝对值是否越限」，ML 看「是否偏离近期历史分布」，
@@ -22,6 +27,21 @@ export const ANOMALY_WINDOW_SIZE = 60
 export const ANOMALY_MIN_SAMPLES = 12
 /** Z-score 判定阈值：|z| > 2 视为显著偏离历史分布 */
 export const ANOMALY_Z_THRESHOLD = 2
+
+/**
+ * 各指标的最小有效标准差（噪声地板，与传感器分辨率 / 典型噪声同量级）。
+ * 历史近乎恒定时 σ→0，z = (x−μ)/σ 会把正常量化噪声放大成无穷大；
+ * 分母改取 max(σ, 噪声地板) 后：平稳期微小波动 |z|≪2 判正常，
+ * 恒定基线上的真实突变（如 CO₂ 未越限但陡升几十 ppm）仍为大 z 值可检出。
+ */
+export const METRIC_MIN_STDEV: Record<MetricKey, number> = {
+  /** PM2.5：整数分辨率 1 μg/m³ */
+  pm25: 1,
+  /** CO₂：典型传感器噪声地板 ±5 ppm */
+  co2: 5,
+  /** 人流密度：两位小数分辨率，噪声地板 0.05 人/㎡ */
+  crowdDensity: 0.05,
+}
 
 /** 检测所需的时间序列点（与 liveStore 的 LivePoint 同构） */
 export interface AnomalySeriesPoint {
@@ -44,7 +64,7 @@ export interface MetricAnomaly {
   mean: number
   /** 历史窗口标准差 σ（总体标准差，÷N） */
   stddev: number
-  /** 标准分数 z = (x − μ) / σ；σ≈0 且偏离时为 ±Infinity */
+  /** 标准分数 z = (x − μ) / max(σ, 指标噪声地板)；恒为有限值 */
   zScore: number
   anomalous: boolean
 }
@@ -86,15 +106,19 @@ function stddevOf(values: number[], mean: number): number {
   return Math.sqrt(variance)
 }
 
-/** σ≈0（历史恒定）时的 z：无偏差为 0，任何偏离都视为无限显著 */
-function zScoreOf(value: number, mean: number, stddev: number): number {
-  if (stddev < 1e-9) {
-    // 恒定序列的浮点累加会让均值偏离精确值（0.3 × 60 ≈ 18.000…004），
-    // 用绝对容差判断“无偏差”；真实偏离（≥ 测量分辨率）远大于此容差。
-    if (Math.abs(value - mean) < 1e-6) return 0
-    return value > mean ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY
-  }
-  return (value - mean) / stddev
+/**
+ * 带噪声地板的 z 值：分母取 max(σ, 指标最小有效标准差)。
+ * σ≈0（历史恒定）时正常波动只得到远小于阈值的小 z 值；
+ * 显著偏离（|x−μ| 数倍于噪声地板）仍得到大 z 值，检测能力不丢失。
+ */
+function zScoreOf(
+  value: number,
+  mean: number,
+  stddev: number,
+  minStddev: number,
+): number {
+  const effectiveStddev = Math.max(stddev, minStddev)
+  return (value - mean) / effectiveStddev
 }
 
 /**
@@ -133,7 +157,7 @@ export function assessZoneAnomaly(
     const mean = meanOf(values)
     const stddev = stddevOf(values, mean)
     const value = current[key]
-    const zScore = zScoreOf(value, mean, stddev)
+    const zScore = zScoreOf(value, mean, stddev, METRIC_MIN_STDEV[metric])
     return {
       metric,
       label: meta.shortLabel,

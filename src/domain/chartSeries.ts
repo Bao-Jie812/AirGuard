@@ -3,8 +3,11 @@
  * 1. 断档检测 —— 相邻点时间差超过阈值（默认 30 秒，即 6 个推送周期）时，
  *    在断档处插入 null 点，recharts 遇 null 自动断线，
  *    不会用直线强行连接两个相距甚远的点；
- * 2. 显示平滑 —— 每段连续数据内做尾部移动平均（默认 5 点 ≈ 25 秒窗口），
- *    抹掉单步抖动，让 5 秒粒度的密集序列呈现为连贯趋势。
+ * 2. 中值去尖刺 —— 窗口 3 的中值滤波，单点突跳（两侧邻居平稳、唯独本点
+ *    直上直下）被局部中值替换；真实的持续越限（≥2 个连续高点）完整保留；
+ * 3. 居中滑动平均 —— 每段连续数据内做窗口 7（≈35 秒）的居中均值，
+ *    把瞬时阶跃展开为物理上合理的爬坡 / 回落曲线，抹掉单步抖动。
+ *    居中窗口无相位滞后，峰位置不偏移；段首段尾用可用点自适应收窄。
  * 注意：平滑只影响图表展示，统计数值与 Recovery 判定仍使用原始数据。
  */
 
@@ -28,12 +31,37 @@ export interface ChartSeriesPoint {
 }
 
 const DEFAULT_MAX_GAP_MS = 30_000
-const DEFAULT_SMOOTH_WINDOW = 5
+const DEFAULT_SMOOTH_WINDOW = 7
 
-function movingAverage(points: SeriesPoint[], window: number): SeriesPoint[] {
+function median3(a: number, b: number, c: number): number {
+  return a + b + c - Math.min(a, b, c) - Math.max(a, b, c)
+}
+
+/** 单点尖刺替换为 (前, 本, 后) 的中值；首尾点无双侧邻居，保持原值 */
+function medianDespike(points: SeriesPoint[]): SeriesPoint[] {
   return points.map((point, index) => {
-    const start = Math.max(0, index - window + 1)
-    const slice = points.slice(start, index + 1)
+    if (index === 0 || index === points.length - 1) return point
+    const prev = points[index - 1]
+    const next = points[index + 1]
+    return {
+      ...point,
+      pm25: median3(prev.pm25, point.pm25, next.pm25),
+      co2: median3(prev.co2, point.co2, next.co2),
+      crowdDensity: median3(prev.crowdDensity, point.crowdDensity, next.crowdDensity),
+    }
+  })
+}
+
+/** 居中滑动平均：窗口不足时按可用点收窄，实时尾部不会产生滞后 */
+function centeredMovingAverage(
+  points: SeriesPoint[],
+  window: number,
+): SeriesPoint[] {
+  const half = Math.floor(window / 2)
+  return points.map((point, index) => {
+    const start = Math.max(0, index - half)
+    const end = Math.min(points.length - 1, index + half)
+    const slice = points.slice(start, end + 1)
     const mean = (pick: (p: SeriesPoint) => number) =>
       slice.reduce((sum, item) => sum + pick(item), 0) / slice.length
     return {
@@ -73,10 +101,12 @@ export function prepareChartSeries(
         crowdDensity: null,
       })
     }
+    // 先去尖刺再居中平滑：尖刺不进入均值窗口，避免污染两侧走势
+    const despiked = medianDespike(segment)
     const smoothed =
       smoothWindow > 1 && segment.length >= smoothWindow
-        ? movingAverage(segment, smoothWindow)
-        : segment
+        ? centeredMovingAverage(despiked, smoothWindow)
+        : despiked
     for (const point of smoothed) result.push({ ...point })
   })
   return result

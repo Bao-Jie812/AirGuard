@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
+import { MlAlertModal } from './components/domain/MlAlertModal'
 import { AppStoreProvider } from './state/AppStore'
 import { LiveDataProvider } from './state/LiveDataContext'
 import { SelectedZoneProvider } from './state/SelectedZone'
@@ -22,6 +23,8 @@ export default function App() {
         <LiveDataProvider>
         <SelectedZoneProvider>
           <BrowserRouter>
+          {/* 全局 ML 隐患预警：覆盖所有路由（含 H5 /m），自行判定有无预警 */}
+          <MlAlertModal />
           <Routes>
             <Route path="/m" element={<H5Page />} />
             <Route element={<AppShell />}>

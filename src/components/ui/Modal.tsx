@@ -16,6 +16,8 @@ interface ModalProps {
   children: ReactNode
   footer?: ReactNode
   size?: 'sm' | 'md' | 'lg'
+  /** 追加到面板节点的自定义类名（如 ML 预警的橙色呼吸边框） */
+  className?: string
 }
 
 export function Modal({
@@ -26,6 +28,7 @@ export function Modal({
   children,
   footer,
   size = 'md',
+  className,
 }: ModalProps) {
   const titleId = useId()
   const descriptionId = useId()
@@ -68,7 +71,7 @@ export function Modal({
     >
       <div
         ref={panelRef}
-        className={cn('modal', `modal--${size}`)}
+        className={cn('modal', `modal--${size}`, className)}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

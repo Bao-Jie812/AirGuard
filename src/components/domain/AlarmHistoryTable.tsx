@@ -2,7 +2,10 @@ import { ArrowDown, ArrowUp, Minus } from 'lucide-react'
 import { getZone, ZONES } from '../../data/zones'
 import { ZONE_STATUS_LABELS } from '../../domain/constants'
 import { formatNumber } from '../../domain/format'
+import { effectiveZoneStatus } from '../../domain/priority'
+import { useAppStore } from '../../state/AppStore'
 import { useLiveData } from '../../state/LiveDataContext'
+import { getActiveEvents } from '../../state/selectors'
 import { MiniSparkline } from '../ui/MiniSparkline'
 import { cn } from '../../domain/format'
 
@@ -13,13 +16,21 @@ const TREND_COLOR: Record<string, string> = {
   CRITICAL: '#d9534f',
 }
 
-/** 区域实时告警概览：基于 MQTT 实时 Priority（无任何演示换算） */
+/** 区域实时告警概览：基于 MQTT 实时 Priority + 未关闭事件（无任何演示换算） */
 export function useDeviceAlarmStats() {
   const { priorities } = useLiveData()
+  const { state } = useAppStore()
+  const activeEvents = getActiveEvents(state)
   const total = ZONES.length
-  const high = priorities.filter(
-    (item) => item.zoneStatus === 'ALERT' || item.zoneStatus === 'CRITICAL',
-  ).length
+  // 与 2D/3D 地图同一口径：未关闭事件把区域顶入高告警（OPEN=严重、处置中=警戒），
+  // 即使瞬时指标已回落也计入——否则地图全红时这里仍显示「0 个区域高告警」。
+  const high = priorities.filter((item) => {
+    const status = effectiveZoneStatus(
+      item.zoneStatus,
+      activeEvents.filter((event) => event.zoneId === item.zoneId),
+    )
+    return status === 'ALERT' || status === 'CRITICAL'
+  }).length
   return { total, high }
 }
 

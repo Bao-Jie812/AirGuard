@@ -292,7 +292,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             <span className="sidebar__avatar">值</span>
             <span>
               <strong>值班员</strong>
-              <small>SIMULATED · 本地演示数据</small>
+              <small>MQTT · 实时数据接入</small>
             </span>
             <button
               type="button"

@@ -1,128 +1,121 @@
 # AirGuard · 多区域环境与人流智能分析系统
 
-> 🌿 让校园多区域监测从「看到指标」走向「知道先看哪里、为什么、处置后是否真的改善」。
+> 看清区域风险，追踪处置是否真正改善。
 
-AirGuard 是基于 **React + TypeScript + MQTT** 的校园环境与人流监测工作台。系统通过 MQTT 接收宿舍、教学区、食堂三个区域的模拟实时数据，以 **Three.js / React Three Fiber** 构建可交互的校园 3D 场景，并在 Web 大屏与 H5 现场端同步展示环境指标、关注优先级和事件状态。规则阈值与浏览器端 **Z-score 滑动窗口异常检测**并列对照；高德天气作为独立的室外参考证据，失效时不阻断室内业务链。
+AirGuard 是基于 React、Vite、TypeScript、MQTT 与 Three.js 的校园多区域环境和人流监测工作台。系统围绕宿舍、教学区和食堂展示指标、Priority、事件与处置后验证过程，并提供 Web 工作台、H5 现场端、3D/2D 空间示意和 Python CSV 离线报告。
 
-**一句话体验路径：** 区域总览 → 找到 Priority 最高的区域及原因 → 查看趋势与证据 → 记录 Action → 等待后续样本验证 Recovery → 回查 Run Trace。
+> **数据边界：** 当前 MQTT 观测值由 `simulator.js` 生成，不代表真实校园传感器结果；地图是校园空间示意，不使用真实地理坐标。环境指标与项目内阈值只用于教学和竞赛演示，不构成健康或公共卫生诊断。
 
-> **数据声明：** 当前 MQTT 数据由 `simulator.js` 生成，属于演示数据，不代表真实校园传感器结果；地图是校园空间示意，不使用真实地理坐标。本文介绍的是仓库内已经实现的功能，不将案例书的 V1.0 目标误写成当前完成情况。
+## 1. 它解决什么问题
 
-## ✨ 核心亮点
+| 项      | 内容                                                                       |
+| ------ | ------------------------------------------------------------------------ |
+| 给谁用    | 校园值班人员、运维人员与现场巡检人员。                                                      |
+| 在什么场景  | 宿舍、教学区和食堂出现环境指标或人流变化时，需要查看多区域状态、判断先关注哪个区域，并跟踪处置后的变化。                     |
+| 解决什么   | 将多区域指标、趋势和事件放在同一工作台，展示关注优先级及其因素，并使用处置后的新样本评估是否恢复，避免只看单一读数或把“已处置”当作“已恢复”。 |
+| 明确不做什么 | 不提供医疗诊断或公共卫生结论；不自动控制新风、喷雾等物理设备；当前不接入真实传感器；地图不表示真实地理坐标。                   |
 
-| 能力 | 当前实现 | 价值 |
-| --- | --- | --- |
-| 🔄 双数据链 | **实时链：** `simulator.js` → MQTT/JSON → 共享前端状态 → Web 工作台、H5 与 3D 场景；**离线链：** CSV → Python → `report.html` | 实时处置与离线复盘各有入口；报告可用指定 CSV 重新生成 |
-| 🏫 空间联动 | 三个 `zoneId` 对应不同楼栋；3D 建筑和 2D 示意图响应实时状态、未关闭事件和区域选择 | 让异常、Priority 与事件在空间中可见 |
-| 📊 可解释 Priority | 当前 PM2.5、CO₂、人流密度、历史趋势、持续时间及未关闭事件共同参与排序，并显示因子贡献 | 回答「为什么现在先关注这里」，而非只给出神秘分数 |
-| ⚖️ 规则 / 轻量 ML 对照 | 固定阈值与 Z-score 滑动窗口统计并列；规则正常但统计异常 → 建议复核，规则异常但统计正常 → 保留规则警示 | 不用一个模型结论覆盖已确认的业务事实 |
-| 🧩 可信降级 | 南京市高德天气实况请求失败时显示 `TIMEOUT` / `ERROR` 和原因 | 室外证据不可用 ≠ 室内状态异常，也不影响 MQTT、Priority 与事件链 |
-| 🔁 Event → Action → Recovery | MQTT 越限读数可创建事件；Web / H5 记录处置；只接受 Action 后的新样本，并要求连续两组满足规则才确认恢复 | 证明「已经处置」不等于「已经恢复」 |
-| 📷 现场佐证 | Web / H5 拍照留档生成“人工观察”证据，压缩照片经 MQTT 同步（在线时） | 照片提供现场佐证，不替代传感器事实 |
+## 2. 核心功能
 
-### 系统数据流
+| 功能                        | 当前状态 | 一句话说明                                                                              |
+| ------------------------- | ---- | ---------------------------------------------------------------------------------- |
+| MQTT 多区域实时数据              | 部分实现 | 浏览器通过 MQTT 接收区域数据；当前观测值由 `simulator.js` 生成，并非真实传感器读数。                              |
+| 可解释 Priority              | 已实现  | 当前 PM2.5、CO₂、人流密度、历史趋势、持续时间和未关闭事件参与区域关注排序，并展示因子贡献。                                 |
+| Event → Action → Recovery | 已实现  | Action 记录后使用其后的新样本判断 Recovery；Action 完成不等于 Recovery。                               |
+| Web、H5 与空间地图              | 已实现  | 提供总览、历史、证据、事件、运行记录、3D/2D 示意地图和 H5 现场端。                                             |
+| 固定规则与 Z-score 对照          | 部分实现 | 固定阈值与浏览器端 Z-score 滑动窗口统计并列展示；Z-score 是辅助统计，不包含模型训练、模型文件保存与重载流程。                    |
+| 高德天气外部证据                  | 部分实现 | 可请求南京市实况天气；Key 缺失、网络失败或请求超时会显示降级状态，不用天气结果改写室内业务事实。                                 |
+| Python CSV 离线报告           | 已实现  | `analyze_report.py` 读取 CSV 并生成 `report.html`；缺少输入 CSV 时会生成模拟数据。离线分析不会自动导出 MQTT 历史。 |
+| 在线 RAG 与服务端持久化            | 未实现  | 知识引用目前是静态演示条目；事件、Action、运行记录及实时历史保存在浏览器 `localStorage`，不是服务端数据库。                   |
 
-```text
-实时链：模拟器 ──MQTT/TCP──> 公共 Broker ──MQTT/WebSocket──> 浏览器共享状态
-                                                        ├── Web 总览 / 趋势 / 证据
-                                                        ├── 3D 校园空间 / 2D 示意图
-                                                        └── H5 现场查看与处置
+## 3. 10 分钟快速复现
 
-离线链：CSV ──> analyze_report.py ──> 趋势、摘要、事件时间线 ──> report.html
-```
+下列复现记录由参赛者提供：Windows 11、16 GB 内存、AMD Ryzen 处理器；首次安装；日期为 2026-10-27；记录总耗时 3 分 15 秒，按概述口径约 4 分钟。详细设备型号和 Node.js 实际输出未出现在记录中。
 
-实时链和离线链属于**同一项目的两条处理路径**，当前离线脚本**不会自动导出 MQTT 历史**；要分析采集数据，请先提供符合字段要求的 CSV。
+### 路线 A：完整模式（连接外部服务）
 
-## 🧰 技术栈
+需要 Node.js、npm、npm 依赖安装网络、可用 MQTT Broker；天气功能还需要有效的高德 Web 服务 Key。仓库默认使用公共 EMQX Broker，不要通过该公共服务传输个人信息或敏感照片。
 
-| 层级 | 技术 |
-| --- | --- |
-| 前端 | React 19、TypeScript、Vite 8、React Router、CSS |
-| 实时消息 | MQTT.js、MQTT over WebSocket（浏览器）/ MQTT over TCP（模拟器） |
-| 空间与图表 | Three.js、React Three Fiber、Drei、Recharts |
-| 离线分析 | Python 3、NumPy、pandas、Matplotlib，输出单文件 HTML 报告 |
-| 外部证据 | 高德开放平台天气 Web 服务 API（南京市实时天气） |
-| 本地状态 | 浏览器 `localStorage` 保存实时历史、事件、Action 与运行记录；照片只在当前会话内保存 |
-
-## 🚀 环境准备与快速启动
-
-### 1. 安装环境与依赖
-
-- **Node.js：推荐 22.12.0 或更新版本。**&#8203; 当前使用的 Vite 8.3.4 要求 `^20.19.0 || >=22.12.0`；Node 18 和更早版本不适用。
-- npm 随 Node.js 安装；离线分析另需 Python 3 与 `numpy`、`pandas`、`matplotlib`。
-- 需要能访问 MQTT Broker；若使用天气功能，还需能访问高德天气接口。
-
-在项目根目录执行：
+在 Bash / Git Bash 终端执行：
 
 ```bash
-node --version
-npm --version
-npm install
+git clone https://github.com/Bao-Jie812/AirGuard.git
+cd AirGuard
+npm ci
+if [ ! -f .env ]; then cp .env.example .env; fi
 ```
 
-已有 `package-lock.json` 时也可使用 `npm ci` 做锁定依赖安装。
+如需天气功能，在项目根目录编辑 `.env`，为 `VITE_AMAP_KEY` 填入自己申请的高德 Web 服务 Key。仅运行无 Key 降级模式时，可以不创建 `.env`。
 
-### 2. 配置高德天气 Key（重要）
-
-在**项目根目录**（与 `package.json` 同级）手动创建 `.env` 文件，填入你在[高德开放平台](https://lbs.amap.com/)申请的 **Web 服务 Key**：
-
-```dotenv
-VITE_AMAP_KEY=请替换为你自己的高德Web服务Key
-```
-
-- 当前天气接口为 `https://restapi.amap.com/v3/weather/weatherInfo`，查询南京市实况（城市代码 `320100`）。
-- `.env` 已被 `.gitignore` 忽略，**不要把真实 Key 提交到 GitHub**；修改 `.env` 后必须重启 Vite 开发服务。
-- `VITE_` 变量会被打包进浏览器代码，**并非真正保密**：请按高德平台说明限制 Key 的使用范围；若用于公开部署，应改为后端代理并做好访问控制。
-- 没有 Key 也可以运行核心 MQTT、3D、Priority 与事件功能；天气证据会显示 `ERROR` 并解释降级原因。
-
-### 3. 启动 Web 前端（终端 A）
+在终端 A（项目根目录）启动前端：
 
 ```bash
-npm run dev
+npm run dev -- --host 127.0.0.1
 ```
 
-打开终端显示的地址，通常为 <http://localhost:5173/>；工作台默认进入 `/overview`。现场端地址为 <http://localhost:5173/m>（端口以实际终端输出为准）。
-
-### 4. 启动 MQTT 数据模拟器（终端 B）
-
-在**同一项目根目录**另开终端，保持前端运行，然后执行：
+在终端 B（项目根目录）启动模拟器：
 
 ```bash
 node simulator.js
-# 等价命令：npm run simulator
 ```
 
-连接成功后，终端会显示 `connected to mqtt://broker.emqx.io:1883`；默认每 **5 秒**向 `airguard/sensor/zone-n`、`zone-s`、`zone-w` 分别发布一条 JSON。刷新 Web / H5 页面后，应看到 MQTT 已连接、三区域指标与趋势图更新，3D 楼栋状态随实时数据变化。
+### 前端检查与生产构建
 
-> 模拟器默认使用公共 Broker `broker.emqx.io:1883`；浏览器使用 `ws://broker.emqx.io:8083/mqtt`。两端必须连到**同一个 Broker**。当前浏览器连接地址写在 `src/services/mqttClient.ts`，模拟器可通过环境变量 `MQTT_BROKER_URL` 改地址；只改模拟器一侧会导致两端不通。公共 Broker 仅用于演示，不要传输真实个人信息或敏感现场照片。
-
-**一条典型传感器消息**（示例值；实际内容以模拟器输出为准）：
-
-```json
-{
-  "zoneId": "zone-w",
-  "pm25": 28,
-  "co2": 740,
-  "crowdLevel": 0.36,
-  "status": "NORMAL",
-  "time": "2026-10-25T06:00:00.000Z"
-}
+```bash
+npm run typecheck
+npm run lint
+npm run build
+npm run preview
 ```
 
-`crowdLevel` 在**当前代码中是人流密度（人/㎡）**&#8203;，不是 C02 原任务书示例的 0–3 离散拥挤等级。客户端依据数值重新计算 `status`，不会盲信报文中的状态字段；相关阈值以 `src/domain/constants.ts` 和 `simulator.js` 为准。阈值只用于演示，不是公共卫生或健康诊断标准。
+`npm run preview` 用于预览已生成的 `dist/` 构建产物；执行前应先运行 `npm run build`。
 
-### 5. 复现异常 → 处置 → 恢复（推荐演示）
+打开浏览器：
 
-1. 打开 `/overview`，在“演示控制”点击**触发食堂异常**；浏览器向 `airguard/control` 发送指令，模拟器收到后立即发布异常读数。仅点击按钮本身**不会**在前端伪造事件。
-2. 查看实时图表、Priority、地图告警和新建的 `OPEN` 事件；打开事件详情，或在 `/m` 的“处置”页记录 Action，事件进入 `HANDLING`。
-3. 模拟器随后逐步回落。系统收集 `action_at` **之后**的有效 MQTT 样本；若尚未连续两组符合恢复规则，保持处理中 / 未恢复；达到事件定义的连续两组恢复条件后才进入 `RECOVERED`。
-4. 需要重演时，可用演示控制的“一键恢复正常”让模拟器改发正常数据；这只是**恢复模拟输入**，不等于直接强制将事件标记为 `RECOVERED`。如需保存一次明确的重新评估结果，可在事件详情触发 Recovery 重新评估并进入 `/runs` 查看 `run_id`。
+- Web 工作台：<http://localhost:5173/overview>
+- H5 现场端：<http://localhost:5173/m>
 
-> 浏览器端历史和部分业务状态存于 `localStorage`，重开页面可回看；不同浏览器的本地历史**不是共享数据库**。现场联动依赖 MQTT 消息，不要把该演示形态描述为已完成服务端持久化。
+**期望结果：** Vite 显示本地服务地址；模拟器连接成功后输出 `connected to mqtt://broker.emqx.io:1883`，随后每 5 秒向三个区域发布 JSON。Web 与 H5 的区域读数、趋势和空间状态随演示数据更新。天气实况需有效 Key 与外网连接。
 
-### 6. 可选：生成 Python 离线分析报告
+### 路线 B：无天气密钥 / 外部服务不可用时
 
-准备 Python 环境并安装依赖。建议将虚拟环境创建在**项目目录外**，避免意外把依赖文件提交到 GitHub。在 Windows（PowerShell / Git Bash）中可执行：
+这条路线验证天气 Key 缺失或 MQTT Broker 不可用时前端仍可打开。它要求 npm 依赖已安装；全新机器在完全离线且没有 `node_modules` 或 npm 缓存时，`npm ci` 无法完成依赖安装。本项目没有离线 npm 依赖包。
+
+在项目根目录启动前端，不创建 `.env`，也不启动模拟器：
+
+```bash
+npm run dev -- --host 127.0.0.1
+```
+
+打开 <http://localhost:5173/overview>。
+
+**降级后的能力：** 未设置 `VITE_AMAP_KEY` 时，天气证据显示 `ERROR` 并说明未配置 Key；Broker 不可用时，MQTT 状态显示连接中、重连中或离线。前端页面与本地种子事件、运行记录仍可打开，但实时读数、模拟器联动和依赖 MQTT 新样本的完整异常处置流程不可用。
+
+> **若未配置，系统将触发降级机制，不影响核心业务。** 这里的核心业务指不依赖天气的页面展示、规则/Priority 逻辑和本地事件流程；若 MQTT 服务不可用，实时数据与跨端联动本身不可运行。
+
+### 本次冷启动记录
+
+| 步骤        | 命令 / 操作                                                         | 记录耗时     | 记录结果                     |
+| --------- | --------------------------------------------------------------- | -------- | ------------------------ |
+| 1. 拉取源码   | `git clone https://github.com/Bao-Jie812/AirGuard.git`          | 20 秒     | 网络通畅，拉取成功。               |
+| 2. 安装依赖   | `npm install`                                                   | 2 分 10 秒 | 安装 Three.js 等前端依赖。       |
+| 3. 配置环境变量 | 复制 `.env.example` 为 `.env` 并填写 Key                              | 15 秒     | 完整模式；天气 Key 已填写。         |
+| 4. 初始化数据  | 启动模拟器并检查初始化                                                     | 5 秒      | 模拟器启动时初始化内存状态。           |
+| 5. 启动服务   | 终端 A `npm run dev -- --host 127.0.0.1`；终端 B `node simulator.js` | 15 秒     | 两个进程正常运行，Web 显示 MQTT 在线。 |
+| 6. 打开页面   | 访问 `http://localhost:5173/overview`                             | 10 秒     | 首屏正常；记录中天气请求成功。          |
+
+## 4. 环境与依赖
+
+| 软件      | 要求版本                                   | 检查命令               | 本次记录的实测版本                    |
+| ------- | -------------------------------------- | ------------------ | ---------------------------- |
+| Node.js | Vite 8.3.4 要求 `^20.19.0` 或 `>=22.12.0` | `node --version`   | v24.21.0                     |
+| npm     | 随 Node.js 安装；项目有 `package-lock.json`   | `npm --version`    | 11.19.0                      |
+| Python  | Python 3，用于可选离线报告                      | `python --version` | 3.12.10                      |
+| 浏览器     | 当前没有公布经过验证的浏览器支持矩阵                     | 浏览器设置中的“关于”页面      | Microsoft Edge 156.0.4314.42 |
+
+前端依赖清单见 `package.json`，锁文件为 `package-lock.json`，推荐使用 `npm ci` 安装。Vite 版本要求来自 Vite 8.3.4 的 `engines` 声明。
+
+Python 报告依赖 `numpy`、`pandas` 和 `matplotlib`。Python 报告依赖见 `requirements.txt`，可运行 `pip install -r requirements.txt` 安装。Windows Git Bash 下可运行：
 
 ```bash
 python -m venv ../airguard-report-venv
@@ -130,100 +123,177 @@ python -m venv ../airguard-report-venv
 ../airguard-report-venv/Scripts/python.exe analyze_report.py
 ```
 
-在 macOS / Linux 中，将以上解释器路径替换为 `../airguard-report-venv/bin/python`，创建环境时可使用 `python3 -m venv ../airguard-report-venv`。下文的 `python` 指已激活上述环境的解释器；未激活时请使用虚拟环境中的 Python 完整路径。
-
-默认优先读取项目根目录的 `sensor_export.csv`；如果没有，则**生成或复用** `sensor_export_simulated.csv`，并在根目录生成 `report.html`。在浏览器打开 `report.html` 可查看三区域摘要、PM2.5 / CO₂ 趋势及由数据派生的越限时间线。
-
-要验证“换一份数据，报告能重算”，请显式指定 CSV：
+macOS / Linux Bash 下可运行：
 
 ```bash
-python analyze_report.py --csv my_export.csv --out report.html
+python3 -m venv ../airguard-report-venv
+../airguard-report-venv/bin/python -m pip install numpy pandas matplotlib
+../airguard-report-venv/bin/python analyze_report.py
 ```
 
-CSV 最少包含 `ts,zone_id,pm25,co2`，建议再包含 `crowd_level`；`zone_id` 取 `zone-n` / `zone-s` / `zone-w`。默认自动生成的模拟报告与实时 MQTT **不是同一次采集记录**，不要混称为实时导出结果。
+## 5. 环境变量
 
-## 🗂️ 项目目录
+项目根目录提供 `.env.example`，其中列出可选变量 `VITE_AMAP_KEY`。该文件中的示例值不是有效凭据；启用天气功能时，应复制为 `.env` 并替换为自己的 Key。发布到 GitHub 前，应将 `.env.example` 纳入版本控制；真实 `.env` 已被 `.gitignore` 忽略，不要提交。
+
+| 变量名             | 是否必填 | 作用                             | 不填会怎样                                                                              |
+| --------------- | ---- | ------------------------------ | ---------------------------------------------------------------------------------- |
+| `VITE_AMAP_KEY` | 可选   | 高德开放平台 Web 服务 Key，用于请求南京市实况天气。 | 天气证据显示 `ERROR` 并说明未配置 Key；MQTT、Priority 和事件处理不依赖天气 Key。**若未配置，系统将触发降级机制，不影响核心业务。** |
+
+在 Bash / Git Bash 中，仅当 `.env` 不存在时复制示例：
+
+```bash
+if [ ! -f .env ]; then cp .env.example .env; fi
+```
+
+随后手动编辑 `.env`。若保留示例值，天气请求会返回 `ERROR`。修改 `.env` 后需要重启 Vite。`VITE_` 变量会进入浏览器端构建产物，不是服务端秘密；公开部署应按高德平台规则限制 Key，并评估通过后端代理请求。
+
+## 6. 复现实测记录
+
+| 项    | 本次记录                                                                       |
+| ---- | -------------------------------------------------------------------------- |
+| 测试人  | 本人                                                                         |
+| 机器   | Windows 11，16 GB 内存，AMD Ryzen 处理器。                                         |
+| 是否首次 | 是，记录为首次安装。                                                                 |
+| 测试日期 | 2026-10-27                                                                 |
+| 总耗时  | 记录总计 3 分 15 秒；概述口径约 4 分钟。                                                  |
+| 环境版本 | npm 11.19.0、Python 3.12.10、Microsoft Edge 156.0.4314.42；Node.js 实际版本未写入记录。 |
+
+## 7. 验收清单（跑起来该看到什么）
+
+### 服务启动
+
+操作：终端 A 运行 `npm run dev -- --host 127.0.0.1`，终端 B 运行 `node simulator.js`。  
+期望：Vite 输出本地服务地址；模拟器连接 Broker 并周期发布数据；Web 显示 MQTT 在线。
+
+![终端截图](docs/screenshots/01-终端.png)
+
+### 首页总览
+
+操作：打开 `/overview`。  
+期望：看到区域总览、Priority、空间状态和证据健康信息。
+
+![首页总览](docs/screenshots/02-首页.png)
+
+### 触发异常
+
+操作：在总览页点击「触发食堂异常」。  
+期望：模拟器收到控制指令后向 zone-w 发布异常数据，Priority 改变并出现事件；事件由收到的 MQTT 读数创建。
+
+![异常触发](docs/screenshots/03-异常.png)
+
+### H5 处置与恢复
+
+操作：在 H5 `/m` 记录 Action，随后让模拟器恢复正常并等待新样本。  
+期望：事件进入处理中；恢复由 Action 之后的新样本评估，Action 本身不会直接把事件改为 `RECOVERED`。
+
+![处置与恢复](docs/screenshots/04-恢复.png)
+
+### 天气降级
+
+操作：不设置 `VITE_AMAP_KEY`，或令天气请求失败。  
+期望：天气证据显示 `ERROR` 或 `TIMEOUT` 及原因；天气服务不可用不代表室内状态异常，也不应覆盖室内业务数据。
+
+![天气降级](docs/screenshots/05-天气降级.png)
+
+### 事件记录
+
+操作：记录事件处置，并在事件详情执行 Recovery 重新评估。  
+期望：事件与运行记录可在事件页和 `/runs` 查看；本地记录保存在当前浏览器 `localStorage`。
+
+![事件记录](docs/screenshots/06-事件记录.png)
+
+### Python 离线报告
+
+操作：在已安装 Python 依赖的环境运行 `analyze_report.py`。  
+期望：项目根目录生成 `report.html`，展示区域摘要、PM2.5 / CO₂ 趋势和事件时间线。若没有输入 CSV，脚本会生成或复用模拟数据；该报告不是 MQTT 实时历史的自动导出。
+
+![离线报告](docs/screenshots/07-离线报告.png)
+
+## 8. 排错 FAQ
+
+以下问题与处理方式来自参赛者提供的开发与测试记录，并结合当前代码行为整理。
+
+### Q：页面上的 MQTT 一直显示离线，或数据停止更新。
+
+- **原因：** 浏览器与模拟器需要连接同一个 Broker；网络中断、公共 Broker 不可用、Topic 不匹配或模拟器未运行都会导致收不到新数据。
+- **解决：** 确认终端 A 的 Vite 服务和终端 B 的模拟器均在运行；模拟器应输出 `connected to mqtt://broker.emqx.io:1883`。浏览器默认 WebSocket 地址为 `ws://broker.emqx.io:8083/mqtt`，模拟器默认 TCP 地址为 `mqtt://broker.emqx.io:1883`。确认两端 Broker 一致，并检查 `airguard/sensor/...` Topic。连接恢复后等待下一轮约 5 秒的采样。
+- **开发记录：** 参赛者曾在早期测试中遇到页面长时间未刷新后连接中断、图表停止更新的问题。排查后加入连接状态提示与重连处理；Broker 是否可用仍取决于网络和外部服务状态。
+
+### Q：高德天气显示 `TIMEOUT` 或 `ERROR`。
+
+- **原因：** 未配置 Key、Key 鉴权失败、网络错误、请求超过约 5 秒，或响应结构不符合当前解析约定。
+- **解决：** 检查根目录 `.env` 的 `VITE_AMAP_KEY` 是否为高德 Web 服务 Key；修改后重启 `npm run dev`。在 `/evidence` 刷新天气，并通过浏览器开发者工具 Console 查看 `[天气]` 日志。当前实现要求高德返回 `lives[0].temperature` 和 `lives[0].weather`；湿度与风力字段允许缺失。
+- **开发记录：** 参赛者记录过接口响应字段结构不符合原解析预期的报错，日志中提及缺少 `results[0].now`。后续调整了响应字段解析，并使湿度等可选字段缺失时不阻断天气卡片。当前代码路径以 `src/services/weather.ts` 为准。
+
+### Q：刚启动时没有曲线，Z-score 显示“样本积累中”或没有预警弹窗。
+
+- **原因：** 曲线至少需要两个数据点；Z-score 使用当前点之前的历史作为基线，至少需要 12 个基线点。模拟器每 5 秒发送一次数据，启动初期样本不足时不会输出异常结论。
+- **解决：** 确认模拟器持续发布，并等待历史点累积。该状态表示统计样本不足，不应解读为规则异常或模型错误。
+- **开发记录：** 参赛者在 2026-10-26 测试预警时曾因页面刚启动、基线点不足而未见弹窗；排查后确认符合样本下限逻辑。
+
+### Q：Python 报告与 MQTT 工作台显示的数据不一致。
+
+- **原因：** Python 脚本读取 CSV；MQTT 工作台读取实时 Broker 数据。两条链没有自动导出桥接，默认模拟 CSV 也不是当前 MQTT 会话记录。
+- **解决：** 确认 CSV 来源。分析实际采样数据时，提供对应 CSV 并用 `--csv` 指定：
+
+```bash
+python analyze_report.py --csv sensor_export_simulated.csv --out report.html
+```
+
+CSV 至少需要 `ts,zone_id,pm25,co2` 列；`zone_id` 应为 `zone-n`、`zone-s` 或 `zone-w`。
+
+- **开发记录：** 参赛者在 2026-10-25 生成报告时发现图表与实时工作台不一致，定位为离线脚本读取静态/模拟 CSV，而网页读取 MQTT 实时流；README 因此补充了两条链路的独立说明。
+
+### Q：iPad H5 点击拍照后进入文件选择，或没有唤起后置相机。
+
+- **原因：** `capture="environment"` 是浏览器对后置摄像头的提示，实际行为仍受 iPad 型号、操作系统、浏览器权限和安全策略影响。
+- **解决：** 在目标 iPad 上确认摄像头权限及浏览器版本；从 H5「现场」页再次操作，并以目标设备的实际测试结果为准。当前页面使用文件输入和 `capture="environment"`，不代表所有浏览器组合均支持相同唤起行为。
+- **数据流说明：** 图片先在浏览器压缩到最长边 640 像素并编码为 JPEG，再将压缩后的图片 data URL 与人工观察元数据一起通过 MQTT 同步；当前并非只经 MQTT 传元数据。
+
+## 9. AI 协同说明
+
+| 项     | 内容                                                                                                                            |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------- |
+| 使用的工具 | WorkBuddy AI、Claude Code、GPT（用于外部 3D 代码参考）、DeepSeek V4 Pro、火山 Coding Plan。                                                    |
+| 怎么用的  | 参赛者拆分需求并定义业务边界，如状态机、MQTT 数据流与降级行为；AI 用于生成初版代码或文档；参赛者本地运行、检查类型与交互、纠正业务逻辑并决定采纳内容。                                               |
+| 对话记录  | 开发过程截图整理在 `02_AI对话快照/`；提交材料另含 3 个核心案例，涉及 3D 场景重构、ML 预警防重复弹窗与 Camera 跨端调试。                                                     |
+| 人工把关  | 要求 AI 不擅自改变 MQTT 与状态机业务边界；引入 3D 代码时检查现有接口；发现弹窗重复时收紧规则触发条件并增加 Snooze；跨端图片功能检查目标设备表现及消息负载。文件级 `@ts-nocheck` 只会抑制类型诊断，不等于修复类型错误。 |
+
+## 10. 目录结构
 
 ```text
 AirGuard/
-├── src/
-│   ├── components/
-│   │   ├── charts/           # Recharts 实时/历史趋势组件
-│   │   ├── domain/           # 3D 校园、2D 地图、Priority、证据及业务卡片
-│   │   ├── layout/           # Web 工作台侧栏、顶部导航
-│   │   └── ui/               # 通用按钮、标签、卡片与交互组件
-│   ├── pages/                # Overview、History、Evidence、Events、Runs、Map、H5
-│   ├── services/             # MQTT 客户端、天气请求、图片压缩
-│   ├── state/                # 实时数据、事件状态、浏览器持久化与通知
-│   ├── domain/               # Priority、Recovery、Z-score、阈值及图表数据处理
-│   ├── data/                 # 区域、业务类型、演示证据与种子数据
-│   └── styles/               # 全局变量与 Web / H5 样式
-├── simulator.js              # MQTT 三区域实时数据与异常/恢复指令模拟器
-├── analyze_report.py         # CSV → Python 统计与可复现 HTML 报告
-├── report.html               # 离线报告示例 / 重新运行后的输出
-├── docs/                     # 阶段性说明及截图（部分旧文档记录早期原型）
-└── package.json              # 前端依赖及脚本
+├── .env.example            # 高德天气 Key 示例，不含真实凭据
+├── package.json            # 前端依赖声明及 npm scripts
+├── package-lock.json       # npm 依赖锁文件
+├── simulator.js            # MQTT 多区域实时数据模拟器
+├── analyze_report.py       # CSV 离线分析与 HTML 报告生成脚本
+├── report.html             # 离线分析报告输出，位于项目根目录
+├── sensor_export_simulated.csv  # 离线脚本生成或复用的模拟 CSV
+├── public/                 # Vite 静态资源
+├── docs/
+│   └── screenshots/        # 验收截图
+└── src/
+    ├── components/         # 图表、空间、业务卡片、布局与通用 UI
+    ├── pages/              # Web 工作台页面与 H5 现场端
+    ├── services/           # MQTT、天气请求与图片压缩
+    ├── state/              # 实时状态、事件与浏览器本地持久化
+    ├── domain/             # Priority、Recovery、Z-score 与业务规则
+    ├── data/               # 区域、事件、证据和演示数据
+    └── styles/              # 全局、组件及页面样式
 ```
 
-## 🧭 页面与业务边界
+## 11. 已知限制
 
-| 地址 | 内容 |
-| --- | --- |
-| `/overview` | 区域总览、可解释 Priority、3D 态势、实时大屏与证据健康 |
-| `/history` | MQTT 历史趋势及 Event / Action 时间线 |
-| `/evidence` | 当前事实、历史、规则、Z-score、天气、演示知识引用与人工观察 |
-| `/events`、`/events/:eventId` | 事件列表、处置 Action、后验样本与恢复复核 |
-| `/runs`、`/runs/:runId` | 已保存的运行快照和可回查分析记录 |
-| `/map` | 交互式校园 3D 空间 / 2D 示意 |
-| `/m` | H5 现场查看、事件处置与拍照留档 |
-
-**哪些是演示、哪些是真实接入：** MQTT 传输和高德 HTTP 请求是真实网络调用，但 MQTT 观测值来自模拟器；Z-score 是浏览器内统计检测，**尚无训练 / 测试 / 模型文件保存与重载流程**；知识引用目前是静态演示条目，不是在线 RAG 检索；Run Trace 包含演示快照与本地运行记录，不等同于已建成数据库或完整后端 Tool Trace。S03-B 案例书要求的完整 S1–S5、B01–B08 验收证据应单独核验，不能仅凭现有页面宣称全部通过。
-
-## 🧪 检查与构建
-
-```bash
-npm run typecheck   # TypeScript 类型检查
-npm run lint        # Oxlint 静态检查
-npm run build       # 类型检查 + Vite 生产构建，产物在 dist/
-npm run preview     # 本地预览已构建版本
-```
-
-应用使用 `BrowserRouter`；部署到静态服务器时，应配置未知路径回退至 `index.html`，否则刷新 `/m` 等子路由可能返回 404。HTTPS 页面不能直接连接当前硬编码的 `ws://` 地址；公开部署需要提供与页面协议兼容的安全 WebSocket 接入并相应修改客户端配置。
-
-## ❓ 常见问题（FAQ）
-
-<details>
-<summary><strong>MQTT 一直显示离线或“重连中”，怎么排查？</strong></summary>
-
-1. 确认前端和 `node simulator.js` **两个进程都在运行**，模拟器终端出现 `connected to ...` 及周期性发布日志。
-2. 浏览器开发者工具检查 WebSocket 连接；本地前端使用 `ws://broker.emqx.io:8083/mqtt`，模拟器使用 `mqtt://broker.emqx.io:1883`。检查网络 / 防火墙是否允许相应端口，公共 Broker 是否可用。
-3. 确保 Web 与模拟器使用同一 Broker、同一组 `airguard/sensor/...` Topic；如果更换 Broker，浏览器 URL 与模拟器 URL 都要调整。
-4. 若页面通过 HTTPS 打开，`ws://` 会被浏览器拦截；本地先用 `http://localhost:5173` 验证，正式部署改用可用的 `wss://` 服务。
-5. “已连接”只说明浏览器连上 Broker；**看不到数据**还要检查模拟器是否正在发布、订阅 Topic 是否一致。连接恢复后等待下一轮约 5 秒的采样。
-
-</details>
-
-<details>
-<summary><strong>高德天气出现 TIMEOUT / ERROR，是否影响监测？</strong></summary>
-
-不会。`TIMEOUT` 表示请求超过约 5 秒；`ERROR` 可能是 Key 未配置、鉴权失败、网络错误或接口返回不符合预期。先确认根目录 `.env` 中配置了有效的 `VITE_AMAP_KEY`，重启 `npm run dev`；再到 `/evidence` 点击“刷新天气”，用浏览器 F12 → Console 查看 `[天气]` 日志和接口错误码。即使天气不可用，室内 MQTT 数据、Priority 与 Event / Action / Recovery 不应被天气失败改写。
-
-</details>
-
-<details>
-<summary><strong>打开页面却没有曲线、ML 显示“样本积累中”？</strong></summary>
-
-先确认 MQTT 模拟器持续发布。实时图表需要至少两个数据点；Z-score 会在当前点之前积累足够的历史基线后才输出结果（当前最少 12 个基线点，每 5 秒一条）。断网、刚启动或本地历史为空时不应凭空显示模型判定。
-
-</details>
-
-<details>
-<summary><strong>为什么运行 Python 脚本后，报告与当前 MQTT 大屏不一样？</strong></summary>
-
-两条链目前不会自动互相导出：未指定 CSV 时，脚本读取 `sensor_export.csv`，或者生成 / 复用 `sensor_export_simulated.csv`。若要分析你自己的采样记录，请先导出符合字段约定的 CSV，再通过 `--csv` 指定文件；不要把模拟离线数据当作实时历史。
-
-</details>
-
-## ⚠️ 使用边界
-
-本项目面向教学与竞赛演示，不提供真实公共卫生判断、人员身份识别或自动物理控制；阈值与 Priority 只是项目内可解释的关注规则。公共 MQTT Broker 和前端天气 Key 均不适合承载正式生产或敏感数据。若扩展为正式系统，需要私有消息服务、密钥代理、服务端持久化、权限隔离，并补齐异常输入、时序健壮性与场景回归验证。
+| 限制                                | 影响                                       | 后续打算                                                    |
+| --------------------------------- | ---------------------------------------- | ------------------------------------------------------- |
+| MQTT 观测值来自 `simulator.js`，不是现场传感器 | 只能验证演示流程，不能代表校园现场环境                      | 后续可评估通过 ESP32 等边缘硬件接入真实温湿度与空气质量传感器；当前不提供真实设备采集。         |
+| 默认使用公共 MQTT Broker                | Broker 可用性和网络状况会影响实时链；不适合敏感信息或生产使用       | 后续计划评估部署自建 EMQX 服务。                                     |
+| 高德天气依赖可选 Key 与外网                  | 天气不可用时显示 `ERROR` / `TIMEOUT`；室内核心链不依赖该证据 | 当前提供无 Key 降级方式；暂无后端代理计划。                                |
+| 业务状态保存在浏览器 `localStorage`         | 不同浏览器不共享；清理浏览器数据会影响本地事件、Action、运行记录或历史   | 后续计划评估 Node.js/FastAPI 与 SQLite 服务端持久化。                 |
+| Z-score 是浏览器端滑动窗口统计               | 不包含模型训练、模型文件保存、重载或版本管理流程                 | 后续计划评估将统计逻辑迁移到 Python 服务，并研究 Isolation Forest 等模型；尚未实现。 |
+| 知识引用为静态演示条目                       | 当前不提供在线 RAG 检索或实时知识库召回                   | 后续计划评估 LangChain 与向量数据库方案，例如 ChromaDB；尚未实现。             |
+| Python 离线报告和 MQTT 实时链相互独立         | MQTT 历史不会自动变成 CSV；报告处理输入 CSV 或脚本生成的模拟数据  | 后续可评估增加服务端数据落盘与报表生成链路。                                  |
+| H5 Camera 受设备与浏览器兼容性影响            | 后置相机提示不保证所有 iPad / 浏览器均按相同方式打开相机         | 继续按目标设备验证权限与唤起流程，并记录设备、系统和浏览器版本。                        |
+| 图片通过 MQTT 同步压缩后的 data URL         | 相比原图负载较小，但仍占用 Broker 消息传输和浏览器处理资源        | 如改为对象存储或元数据传输，应另行实现后端存储并更新数据流。                          |
+| 尚无正式性能基准与全量自动化回归套件                | 没有经测量的延迟、并发、资源占用或丢包率结论                   | 后续建立固定输入、自动化场景和性能测试记录；当前不提供性能承诺。                        |

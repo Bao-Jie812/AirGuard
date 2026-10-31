@@ -38,7 +38,7 @@ import {
   formatNumber,
   cn,
 } from '../domain/format'
-import { metricStatus } from '../domain/priority'
+import { metricStatus, effectiveZoneStatus } from '../domain/priority'
 import {
   getActiveEvents,
   getEventsForZone,
@@ -205,7 +205,12 @@ export function SpaceMapPage() {
                   {zone.building}
                 </p>
               </div>
-              <ZoneStatusBadge status={priority.zoneStatus} />
+              <ZoneStatusBadge
+                status={effectiveZoneStatus(
+                  priority.zoneStatus,
+                  activeEvent ? [activeEvent] : [],
+                )}
+              />
             </div>
 
             <div className="map-score-row">

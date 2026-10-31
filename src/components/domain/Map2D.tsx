@@ -9,6 +9,7 @@ import {
   ZONE_STATUS_COLORS,
   ZONE_STATUS_LABELS,
 } from '../../domain/constants'
+import { effectiveZoneStatus } from '../../domain/priority'
 import { cn } from '../../domain/format'
 
 interface Map2DProps {
@@ -53,8 +54,10 @@ const ZONE_ALARM_RECTS: Record<
  * 2. 告警视觉与 3D 地图三态联动一致：未关闭事件覆盖瞬时数据档位——
  *    OPEN=严重红、处置中=警戒橙；此时渲染覆盖整栋建筑的发光包围层与雷达扩散波，
  *    定位点与文字同步变红。NORMAL / WATCH 只显示一个小圆点，避免整张图被色斑覆盖。
- * 3. 名称、状态、Priority 得分全部来自同一份 priorities，
- *    与 3D 地图、优先级表格严格同源。
+ * 3. 名称、状态文字、Priority 得分全部来自同一份 priorities，且状态文字
+ *    同样使用事件升级后的有效状态（effectiveZoneStatus）——withActiveEvent
+ *    只加得分不回写 zoneStatus，直接读原始档位会出现「58 分却写正常」的撕裂。
+ *    与 3D 地图、优先级表格、顶部仪表盘严格同源。
  */
 export function Map2D({
   priorities,
@@ -64,11 +67,10 @@ export function Map2D({
 }: Map2DProps) {
   // 与 3D 地图 statusByZone 同语义：有未关闭事件时 OPEN 优先升级为严重红
   function effectiveStatusOf(zoneId: string, fallback: ZoneStatus): ZoneStatus {
-    const zoneEvents = activeEvents.filter((event) => event.zoneId === zoneId)
-    if (zoneEvents.length === 0) return fallback
-    return zoneEvents.some((event) => event.status === 'OPEN')
-      ? 'CRITICAL'
-      : 'ALERT'
+    return effectiveZoneStatus(
+      fallback,
+      activeEvents.filter((event) => event.zoneId === zoneId),
+    )
   }
 
   return (
@@ -228,7 +230,7 @@ export function Map2D({
           (event) => event.zoneId === priority.zoneId,
         )
         const selected = priority.zoneId === selectedZoneId
-        const summary = `${zone.name} · ${ZONE_STATUS_LABELS[status]} · Priority ${priority.score.toFixed(1)}`
+        const summary = `${zone.name} · ${ZONE_STATUS_LABELS[effectiveStatus]} · Priority ${priority.score.toFixed(1)}`
 
         return (
           <button
@@ -273,7 +275,7 @@ export function Map2D({
             >
               <strong>{zone.shortName}</strong>
               <small>
-                {ZONE_STATUS_LABELS[status]} · {priority.score.toFixed(1)}
+                {ZONE_STATUS_LABELS[effectiveStatus]} · {priority.score.toFixed(1)}
               </small>
             </span>
           </button>

@@ -48,10 +48,11 @@ import {
   formatTime,
 } from '../domain/format'
 import {
+  effectiveZoneStatus,
   metricStatus,
   priorityLevelText,
 } from '../domain/priority'
-import { getEventsForZone } from '../state/selectors'
+import { getActiveEventForZone, getEventsForZone } from '../state/selectors'
 import { cn } from '../domain/format'
 
 type RangeKey = '3h' | '6h' | '12h' | 'today'
@@ -145,6 +146,8 @@ export function HistoryPage() {
 
   const zone = getZone(selectedZoneId)
   const priority = priorities.find((item) => item.zoneId === selectedZoneId)
+  // 状态徽章与地图同源：未关闭事件覆盖瞬时指标档位
+  const activeEvent = getActiveEventForZone(state, selectedZoneId)
   const rangeConfig =
     RANGE_OPTIONS.find((option) => option.key === range) ?? RANGE_OPTIONS[1]
   // 历史归档在页面挂载时读取一次（localStorage 中跨会话持久化），
@@ -446,7 +449,14 @@ export function HistoryPage() {
       <SectionCard
         title="环境指标趋势"
         subtitle={`${zone.name} · 虚线标记 Event / Action 发生时间与警戒阈值`}
-        action={<ZoneStatusBadge status={priority?.zoneStatus ?? 'NORMAL'} />}
+        action={
+          <ZoneStatusBadge
+            status={effectiveZoneStatus(
+              priority?.zoneStatus ?? 'NORMAL',
+              activeEvent ? [activeEvent] : [],
+            )}
+          />
+        }
       >
         {loading ? (
           <div className="chart-pair">

@@ -11,6 +11,9 @@ import {
 import { evaluateRecovery } from '../domain/recovery'
 import { formatDateTime, formatNumber } from '../domain/format'
 import {
+  DORM_RECOVERED_EVENT_ID,
+  DORM_RECOVERY_RUN_ID,
+  DORM_VENT_ACTION_ID,
   EVENT_CREATION_RUN_ID,
   HANDLING_EVENT_ID,
   PRIORITY_RUN_ID,
@@ -50,6 +53,7 @@ export const DEMO_VERSIONS: RunVersionSet = {
  * 1. 10:15 Priority 分析 → 第二食堂 Priority #1
  * 2. 10:40 Recovery 重新评估 → 第二食堂已恢复
  * 3. 14:20 Event 创建 → 教学区 A 待处置事件（外部天气接口超时，PARTIAL）
+ * 4. 16:00 Recovery 重新评估 → 东区宿舍已恢复
  * 全部通过 SEEDED_DEMO 标记为历史快照，不会在打开页面时重新计算。
  */
 export const SEED_RUNS: RunTrace[] = buildSeedRuns()
@@ -399,14 +403,28 @@ function buildPrioritySeedRun(): RunTrace {
   }
 }
 
-function buildRecoverySeedRun(): RunTrace {
+interface RecoverySeedRunConfig {
+  eventId: string
+  actionId: string
+  runId: string
+  recoveredAt: string
+  eventLabel: string
+}
+
+function buildRecoverySeedRun({
+  eventId,
+  actionId,
+  runId,
+  recoveredAt,
+  eventLabel,
+}: RecoverySeedRunConfig): RunTrace {
   const recoveredEvent = requireSeedEntry(
-    SEED_EVENTS.find((event) => event.eventId === RECOVERED_EVENT_ID),
-    '第二食堂已恢复事件',
+    SEED_EVENTS.find((event) => event.eventId === eventId),
+    eventLabel,
   )
   const action = requireSeedEntry(
-    SEED_ACTIONS.find((item) => item.actionId === VENT_ACTION_ID),
-    '开启排风 Action',
+    SEED_ACTIONS.find((item) => item.actionId === actionId),
+    `${eventLabel} Action`,
   )
   // 评估前的状态：HANDLING（RECOVERED 是评估结果，不是输入）
   const preRecoveryEvent: EnvironmentEvent = {
@@ -421,14 +439,14 @@ function buildRecoverySeedRun(): RunTrace {
     preRecoveryEvent,
     SEED_ACTIONS,
     SEED_RECOVERY_SAMPLES,
-    SEED_TIMES.recoveredAt,
+    recoveredAt,
   )
   const run = createRecoveryRun({
-    runId: RECOVERY_RUN_ID,
+    runId,
     event: preRecoveryEvent,
     action,
     evaluation,
-    createdAt: SEED_TIMES.recoveredAt,
+    createdAt: recoveredAt,
   })
 
   return {
@@ -437,9 +455,9 @@ function buildRecoverySeedRun(): RunTrace {
     trigger: '事件恢复时间点自动执行 Recovery 规则评估（种子快照）',
     finalOutput: {
       ...run.finalOutput,
-      label: '第二食堂已恢复',
+      label: `${getZone(recoveredEvent.zoneId).shortName}已恢复`,
       tone: 'success',
-      summary: `Action ${action.actionId}（开启东侧排风系统）后连续 3 组有效样本满足恢复阈值，事件由 HANDLING 转为 RECOVERED。`,
+      summary: `Action ${action.actionId}（${action.title}）后连续 ${evaluation.trailingPassCount} 组有效样本满足恢复阈值，事件由 HANDLING 转为 RECOVERED。`,
       limitations: [],
     },
   }
@@ -606,7 +624,20 @@ function buildEventCreationSeedRun(): RunTrace {
 function buildSeedRuns(): RunTrace[] {
   return [
     buildPrioritySeedRun(),
-    buildRecoverySeedRun(),
+    buildRecoverySeedRun({
+      eventId: RECOVERED_EVENT_ID,
+      actionId: VENT_ACTION_ID,
+      runId: RECOVERY_RUN_ID,
+      recoveredAt: SEED_TIMES.recoveredAt,
+      eventLabel: '第二食堂已恢复事件',
+    }),
+    buildRecoverySeedRun({
+      eventId: DORM_RECOVERED_EVENT_ID,
+      actionId: DORM_VENT_ACTION_ID,
+      runId: DORM_RECOVERY_RUN_ID,
+      recoveredAt: SEED_TIMES.dormRecoveredAt,
+      eventLabel: '东区宿舍已恢复事件',
+    }),
     buildEventCreationSeedRun(),
   ]
 }

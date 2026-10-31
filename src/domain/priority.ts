@@ -97,6 +97,45 @@ export function zoneStatusFromMetrics(values: {
   return 'NORMAL'
 }
 
+const ZONE_STATUS_RANK: Record<ZoneStatus, number> = {
+  NORMAL: 0,
+  WATCH: 1,
+  ALERT: 2,
+  CRITICAL: 3,
+}
+
+/**
+ * 三态联动后的有效业务状态：未关闭事件覆盖瞬时指标档位，但分两档——
+ * 数据仍处告警档（ALERT/CRITICAL）：OPEN=严重红、处置中=警戒橙；
+ * 数据已回落（NORMAL/WATCH）：遗留未关闭事件最多顶到警戒橙——
+ *   红色严重档只留给「数据仍异常 + 事件未关闭」的真实高危区域，
+ *   正常区域呈现为「需收尾处置」而非「极度危险」。
+ * 只升不降（指标已 CRITICAL 时处置中事件不会把它降回 ALERT）；
+ * 无未关闭事件时等于指标档位。
+ *
+ * withActiveEvent 只给得分加分、不回写 zoneStatus，因此凡是把状态
+ * 文字 / 颜色与得分、3D/2D 地图放在一起展示的地方都必须用本函数，
+ * 否则会出现「得分 58 却写正常」的状态撕裂。
+ * 例外：Rule-vs-ML 仲裁（RuleVsMlCard、ML 隐患预警）需要纯指标口径，
+ * 必须继续使用 zoneStatus，不要调用本函数。
+ */
+export function effectiveZoneStatus(
+  base: ZoneStatus,
+  zoneEvents: ReadonlyArray<{ status: EventStatus }>,
+): ZoneStatus {
+  let effective = base
+  const dataAlarming = base === 'ALERT' || base === 'CRITICAL'
+  for (const event of zoneEvents) {
+    if (event.status === 'RECOVERED') continue
+    const implied: ZoneStatus =
+      event.status === 'OPEN' && dataAlarming ? 'CRITICAL' : 'ALERT'
+    if (ZONE_STATUS_RANK[implied] > ZONE_STATUS_RANK[effective]) {
+      effective = implied
+    }
+  }
+  return effective
+}
+
 function oneHourEarlier(
   points: MetricSeriesPoint[],
   current: MetricSeriesPoint,
@@ -334,8 +373,25 @@ const EVENT_PRIORITY_BOOST: Record<
 }
 
 /**
+ * 当前数据已恢复正常（未达告警档）时，遗留未关闭事件的低权重加分。
+ * 量级设计：正常基线约 3-5 分 + 加分后总分落在 20-35（MEDIUM 中），
+ * 高于完全正常的区域（需要人去收尾处置），但低于指标仍异常的区域，
+ * 不再以「极度危险」霸占榜首。
+ */
+const EVENT_PRIORITY_BOOST_DATA_RECOVERED: Record<
+  Exclude<EventStatus, 'RECOVERED'>,
+  number
+> = {
+  OPEN: 25,
+  HANDLING: 18,
+  STILL_HANDLING: 22,
+  INSUFFICIENT_EVIDENCE: 15,
+}
+
+/**
  * 有未关闭事件时，在当前数据得分上叠加事件因子。
- * 正常数据 + HANDLING 事件也会被顶到高优先级；
+ * 数据仍异常 → 高权重（真实进行中的高危）；
+ * 数据已回落 → 低权重（提示收尾处置，与 effectiveZoneStatus 的降级同色）；
  * 已恢复（RECOVERED）事件只保留在历史记录中，不参与加分。
  */
 function withActiveEvent(
@@ -343,7 +399,11 @@ function withActiveEvent(
   event: PriorityEventInfo,
 ): PriorityAssessment {
   if (event.status === 'RECOVERED') return assessment
-  const boost = EVENT_PRIORITY_BOOST[event.status]
+  const dataAlarming =
+    assessment.zoneStatus === 'ALERT' || assessment.zoneStatus === 'CRITICAL'
+  const boost = (dataAlarming
+    ? EVENT_PRIORITY_BOOST
+    : EVENT_PRIORITY_BOOST_DATA_RECOVERED)[event.status]
   // 总分不超过 100；事件因子只占剩余空间，保证因子贡献之和与总分一致。
   const contribution = Number(
     Math.min(boost, Math.max(0, 100 - assessment.score)).toFixed(1),

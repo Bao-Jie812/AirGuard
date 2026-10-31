@@ -164,6 +164,23 @@ export interface EventStatusEntry {
   runId?: string
 }
 
+/**
+ * 事件的人工核实证据照片（现场取证回传）。
+ * iPad H5 拍照 → MQTT（airguard/evidence/upload）→ 本端挂入事件；
+ * 压缩图 dataURL 随业务状态持久化到 localStorage，每事件限量保留。
+ */
+export interface EventEvidencePhoto {
+  id: string
+  /** 压缩后的 JPEG dataURL；拍摄端浏览器无法解码时为 null（仅元数据） */
+  imageUrl: string | null
+  fileName: string
+  observedAt: string
+  operator: string
+  origin: 'WEB' | 'H5'
+  /** 上传终端的 MQTT clientId（多端来源追溯） */
+  clientId: string
+}
+
 export interface EnvironmentEvent {
   eventId: string
   zoneId: string
@@ -178,6 +195,8 @@ export interface EnvironmentEvent {
   thresholds: RecoveryThresholds
   limitations: string[]
   statusHistory: EventStatusEntry[]
+  /** 人工核实证据照片；旧持久化数据无此字段，读取时兜底为空数组 */
+  evidencePhotos?: EventEvidencePhoto[]
 }
 
 export interface RecoveryCheck {

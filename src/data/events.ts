@@ -26,12 +26,15 @@ const STAMP = seedDateStamp()
 
 export const RECOVERED_EVENT_ID = `EVT-${STAMP}-001`
 export const HANDLING_EVENT_ID = `EVT-${STAMP}-002`
+export const DORM_RECOVERED_EVENT_ID = `EVT-${STAMP}-003`
 export const VENT_ACTION_ID = `ACT-${STAMP}-001`
 export const WINDOW_ACTION_ID = `ACT-${STAMP}-002`
+export const DORM_VENT_ACTION_ID = `ACT-${STAMP}-003`
 
 export const PRIORITY_RUN_ID = `RUN-${STAMP}-001`
 export const RECOVERY_RUN_ID = `RUN-${STAMP}-002`
 export const EVENT_CREATION_RUN_ID = `RUN-${STAMP}-003`
+export const DORM_RECOVERY_RUN_ID = `RUN-${STAMP}-004`
 
 /**
  * 种子时间线（同一天）：
@@ -52,6 +55,11 @@ export const SEED_TIMES = {
   crowdOpenedAt: seedIsoAt(14, 20),
   crowdActionAt: seedIsoAt(14, 25),
   crowdSampleAt: seedIsoAt(14, 30),
+  dormOpenedAt: seedIsoAt(15, 40),
+  dormVentilationAt: seedIsoAt(15, 45),
+  dormSample1At: seedIsoAt(15, 50),
+  dormSample2At: seedIsoAt(15, 55),
+  dormRecoveredAt: seedIsoAt(16, 0),
 } as const
 
 const RECOVERY_THRESHOLDS = {
@@ -128,6 +136,39 @@ export const SEED_EVENTS: EnvironmentEvent[] = [
       },
     ],
   },
+  {
+    eventId: DORM_RECOVERED_EVENT_ID,
+    zoneId: 'zone-n',
+    title: '东区宿舍 PM2.5 短时超标',
+    description:
+      '东区宿舍 PM2.5 一度高于 75 μg/m³ 警戒阈值。开启排风并保持空气流通后，连续后验样本恢复至正常范围，事件已关闭。',
+    severity: 'HIGH',
+    status: 'RECOVERED',
+    openedAt: SEED_TIMES.dormOpenedAt,
+    closedAt: SEED_TIMES.dormRecoveredAt,
+    scenarioId: null,
+    primaryMetric: 'pm25',
+    thresholds: { ...RECOVERY_THRESHOLDS },
+    limitations: [],
+    statusHistory: [
+      {
+        at: SEED_TIMES.dormOpenedAt,
+        status: 'OPEN',
+        reason: 'MQTT 实时数据触发：东区宿舍 PM2.5 达警戒水平，自动创建事件。',
+      },
+      {
+        at: SEED_TIMES.dormVentilationAt,
+        status: 'HANDLING',
+        reason: `记录 Action ${DORM_VENT_ACTION_ID}：开启宿舍排风系统。事件进入处置中。`,
+      },
+      {
+        at: SEED_TIMES.dormRecoveredAt,
+        status: 'RECOVERED',
+        reason: 'Action 后连续 3 组有效样本满足恢复阈值，事件判定为已恢复。',
+        runId: DORM_RECOVERY_RUN_ID,
+      },
+    ],
+  },
 ]
 
 /* ------------------------------------------------------------------ */
@@ -170,6 +211,25 @@ export const SEED_ACTIONS: ActionRecord[] = [
       pm25: 33,
       co2: 810,
       crowdDensity: 0.86,
+      source: 'SEED_DEMO',
+    },
+  },
+  {
+    actionId: DORM_VENT_ACTION_ID,
+    eventId: DORM_RECOVERED_EVENT_ID,
+    zoneId: 'zone-n',
+    type: 'VENTILATION',
+    title: '开启宿舍排风系统',
+    note: '开启宿舍排风设备并保持空气流通，降低室内 PM2.5 浓度。',
+    operator: '现场值班组',
+    actionAt: SEED_TIMES.dormVentilationAt,
+    createdAt: SEED_TIMES.dormVentilationAt,
+    executionMode: 'SEEDED_DEMO',
+    baseline: {
+      ts: new Date(SEED_TIMES.dormVentilationAt).getTime() - 5_000,
+      pm25: 96,
+      co2: 720,
+      crowdDensity: 0.22,
       source: 'SEED_DEMO',
     },
   },
@@ -239,5 +299,41 @@ export const SEED_RECOVERY_SAMPLES: RecoverySample[] = [
     source: 'SIMULATED',
     quality: 'VALID',
     note: '开窗后首组数据，人流密度仍高于 0.80 人/㎡。',
+  },
+  {
+    sampleId: `SMP-${DORM_RECOVERED_EVENT_ID}-1550`,
+    eventId: DORM_RECOVERED_EVENT_ID,
+    actionId: DORM_VENT_ACTION_ID,
+    timestamp: SEED_TIMES.dormSample1At,
+    pm25: 68,
+    co2: 700,
+    crowdDensity: 0.2,
+    source: 'SIMULATED',
+    quality: 'VALID',
+    note: '排风开启后首组数据，PM2.5 已回落至恢复阈值以下。',
+  },
+  {
+    sampleId: `SMP-${DORM_RECOVERED_EVENT_ID}-1555`,
+    eventId: DORM_RECOVERED_EVENT_ID,
+    actionId: DORM_VENT_ACTION_ID,
+    timestamp: SEED_TIMES.dormSample2At,
+    pm25: 42,
+    co2: 680,
+    crowdDensity: 0.19,
+    source: 'SIMULATED',
+    quality: 'VALID',
+    note: '连续第二组有效样本，指标保持正常。',
+  },
+  {
+    sampleId: `SMP-${DORM_RECOVERED_EVENT_ID}-1600`,
+    eventId: DORM_RECOVERED_EVENT_ID,
+    actionId: DORM_VENT_ACTION_ID,
+    timestamp: SEED_TIMES.dormRecoveredAt,
+    pm25: 28,
+    co2: 660,
+    crowdDensity: 0.18,
+    source: 'SIMULATED',
+    quality: 'VALID',
+    note: '连续第三组有效样本，满足恢复规则。',
   },
 ]

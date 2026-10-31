@@ -13,17 +13,17 @@ import type {
   ActionRecord,
   ActionType,
   EnvironmentEvent,
+  EventEvidencePhoto,
   EventStatus,
   RecoveryEvaluation,
   RecoverySample,
   StoreState,
 } from '../data/types'
-import { getSeedState } from '../data/seed'
-import { SEED_ACTIONS } from '../data/events'
+import { getCleanState } from '../data/seed'
+import { isActiveEventStatus } from '../data/events'
 import {
   ACTION_TYPE_LABELS,
   METRIC_META,
-  SCHEMA_VERSION,
   STORAGE_KEY,
   ZONE_STATUS_LABELS,
 } from '../domain/constants'
@@ -87,6 +87,25 @@ export type ReEvaluateResult =
     }
   | { ok: false; message: string }
 
+/**
+ * 人工核实证据挂载入参。
+ * eventId 来自上报终端本地的事件库 —— 两端事件库独立（各自按 MQTT 读数
+ * 自动建事件），跨端 eventId 不一定对得上，因此匹配策略为：
+ * eventId 精确匹配 → 该区域未关闭事件兜底 → 都没有则失败（仅全局留档）。
+ */
+export interface AppendEventEvidenceInput {
+  eventId?: string
+  zoneId: string
+  photo: EventEvidencePhoto
+}
+
+export type AppendEventEvidenceResult =
+  | { ok: true; eventId: string }
+  | { ok: false; message: string }
+
+/** 每事件最多保留的人工核实照片数（压缩图 dataURL 随状态持久化，需控体积） */
+const EVENT_EVIDENCE_PHOTO_MAX = 3
+
 interface AppStoreValue {
   state: StoreState
   activeEventCount: number
@@ -97,6 +116,10 @@ interface AppStoreValue {
   applyRemoteDisposition: (
     input: RemoteDispositionInput,
   ) => RecordActionResult
+  /** 把现场取证照片挂入事件 evidencePhotos（本端上传或 MQTT 接收共用） */
+  appendEventEvidence: (
+    input: AppendEventEvidenceInput,
+  ) => AppendEventEvidenceResult
   syncReading: (reading: ReadingInput) => void
   reEvaluateEvent: (eventId: string) => ReEvaluateResult
   resetDemoData: () => void
@@ -104,67 +127,18 @@ interface AppStoreValue {
 
 const AppStoreContext = createContext<AppStoreValue | null>(null)
 
-function isStoreState(value: unknown): value is StoreState {
-  if (!value || typeof value !== 'object') return false
-  const record = value as Partial<StoreState>
-  return (
-    record.schemaVersion === SCHEMA_VERSION &&
-    Array.isArray(record.events) &&
-    Array.isArray(record.actions) &&
-    Array.isArray(record.recoverySamples) &&
-    Array.isArray(record.runs)
-  )
-}
-
 /**
- * 旧版本已经持久化的种子 Action 没有 baseline 快照。
- * 按「区域 + 类型 + 标题」匹配当前种子数据补齐，避免用户为了看到
- * Action 前后对比而必须清空 localStorage。
+ * 演示基线：每次启动都覆盖旧业务快照，避免测试事件在刷新后继续累积。
+ * 当前会话内的新事件仍正常写入 localStorage，但不会被下一次启动恢复。
  */
-function attachSeedBaselines(state: StoreState): StoreState {
-  let changed = false
-  const actions = state.actions.map((action) => {
-    if (action.baseline) return action
-    const seed = SEED_ACTIONS.find(
-      (item) =>
-        item.zoneId === action.zoneId &&
-        item.type === action.type &&
-        item.title === action.title &&
-        item.baseline !== undefined,
-    )
-    if (!seed?.baseline) return action
-    changed = true
-    // 旧状态可能来自更早的演示日期：快照时间跟着 action_at 平移，
-    // 保持「Action 前 5 秒」的相对关系，避免显示成今天的时刻。
-    const offset =
-      seed.baseline.ts - new Date(seed.actionAt).getTime()
-    return {
-      ...action,
-      baseline: {
-        ...seed.baseline,
-        ts: new Date(action.actionAt).getTime() + offset,
-      },
-    }
-  })
-  return changed ? { ...state, actions } : state
-}
-
 function loadState(): StoreState {
+  const initialState = getCleanState()
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return getSeedState()
-    const parsed: unknown = JSON.parse(raw)
-    if (!isStoreState(parsed)) {
-      // schema 升级 / 旧版残留：丢弃旧事件与处置记录，从 0 事件开始。
-      console.info(
-        '[AirGuard] 检测到旧版本本地业务状态，已重置为空事件状态。',
-      )
-      return getSeedState()
-    }
-    return attachSeedBaselines(parsed)
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(initialState))
   } catch {
-    return getSeedState()
+    // 存储不可用时仍可使用内存中的干净种子状态。
   }
+  return initialState
 }
 
 function dateStamp(): string {
@@ -393,6 +367,53 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
   )
 
   /**
+   * 人工核实证据挂载：现场取证照片（H5 拍照 / Web 上传，含 MQTT 多端同步）
+   * 追加到事件 evidencePhotos。不改动事件状态 —— 照片是佐证材料，
+   * Recovery 判定仍只依据 Action 后的业务数据。
+   */
+  const appendEventEvidence = useCallback(
+    (input: AppendEventEvidenceInput): AppendEventEvidenceResult => {
+      const event =
+        (input.eventId
+          ? state.events.find((item) => item.eventId === input.eventId)
+          : undefined) ??
+        state.events.find(
+          (item) =>
+            item.zoneId === input.zoneId && isActiveEventStatus(item.status),
+        )
+      if (!event) {
+        return {
+          ok: false,
+          message: '该区域当前没有未关闭事件，照片仅作全局留档。',
+        }
+      }
+      // 幂等：QoS 1 重发 / 离线补发可能重复到达，同 id 照片不重复挂载
+      if ((event.evidencePhotos ?? []).some((p) => p.id === input.photo.id)) {
+        return { ok: true, eventId: event.eventId }
+      }
+      setState((previous) => ({
+        ...previous,
+        events: previous.events.map((item) => {
+          if (item.eventId !== event.eventId) return item
+          // 函数式更新内再查一次：连续快速到达时闭包里的 event 可能过期
+          if ((item.evidencePhotos ?? []).some((p) => p.id === input.photo.id)) {
+            return item
+          }
+          return {
+            ...item,
+            evidencePhotos: [
+              ...(item.evidencePhotos ?? []),
+              input.photo,
+            ].slice(-EVENT_EVIDENCE_PHOTO_MAX),
+          }
+        }),
+      }))
+      return { ok: true, eventId: event.eventId }
+    },
+    [state],
+  )
+
+  /**
    * 每条 MQTT 实时读数驱动业务状态：
    * 1. 区域达 ALERT / CRITICAL 且无未关闭事件 → 自动创建 OPEN 事件；
    * 2. 处置中（HANDLING / STILL_HANDLING）的事件 → 追加真实后验样本，
@@ -549,8 +570,10 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
     [state],
   )
 
+  // 一键清空历史记录：丢弃测试累积的事件 / Action / Run Trace，
+  // 回到只保留 2 条已恢复示例的干净初始态（供重新录制演示）
   const resetDemoData = useCallback(() => {
-    setState(getSeedState())
+    setState(getCleanState())
   }, [])
 
   const activeEventCount = state.events.filter(
@@ -563,6 +586,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       activeEventCount,
       recordAction,
       applyRemoteDisposition,
+      appendEventEvidence,
       syncReading,
       reEvaluateEvent,
       resetDemoData,
@@ -572,6 +596,7 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       activeEventCount,
       recordAction,
       applyRemoteDisposition,
+      appendEventEvidence,
       syncReading,
       reEvaluateEvent,
       resetDemoData,

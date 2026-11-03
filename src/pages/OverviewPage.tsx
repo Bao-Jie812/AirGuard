@@ -77,6 +77,7 @@ export function OverviewPage() {
   const selectedPriority =
     priorities.find((priority) => priority.zoneId === selectedZoneId) ??
     priorities[0]
+  const isSelectedStale = selectedPriority?.summary.startsWith('STALE') ?? false
   // MQTT 实时读数与历史（无静态回退；未收到推送则视为无数据）
   const liveReading = readings[selectedZoneId]
   const hasLive = (liveReading?.receivedAt ?? 0) > 0
@@ -236,9 +237,11 @@ export function OverviewPage() {
             flush
             action={
               <span className="card-meta">
-                {hasLive && liveReading
-                  ? `MQTT 实时 · ${formatDateTime(liveReading.time)}`
-                  : '等待 MQTT 实时数据'}
+                {isSelectedStale
+                  ? 'STALE · 数据离线（超过 15 秒）'
+                  : hasLive && liveReading
+                    ? `MQTT 实时 · ${formatDateTime(liveReading.time)}`
+                    : '等待 MQTT 实时数据'}
               </span>
             }
           >
@@ -403,9 +406,11 @@ export function OverviewPage() {
               <div className="focus-metrics__head">
                 <span>实时环境指标监控</span>
                 <span className="muted">
-                  {hasLive && liveReading
-                    ? `MQTT 实时 · ${formatDateTime(liveReading.time)}`
-                    : '等待 MQTT 数据'}
+                  {isSelectedStale
+                    ? 'STALE · 数据离线'
+                    : hasLive && liveReading
+                      ? `MQTT 实时 · ${formatDateTime(liveReading.time)}`
+                      : '等待 MQTT 数据'}
                 </span>
               </div>
               {METRIC_BAR_ORDER.map((key) => {

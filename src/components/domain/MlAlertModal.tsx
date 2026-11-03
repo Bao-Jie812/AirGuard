@@ -18,8 +18,8 @@ import { Modal } from '../ui/Modal'
  * 全局「ML 隐患预警」弹窗。
  *
  * 触发条件（检测逻辑在 LiveDataContext）：严格限定为规则/ML 分歧状态 ——
- *   固定规则判定 NORMAL，且轻量 ML（Z-score 滑动窗口）判定 ANOMALY。
- *   规则已到 WATCH/ALERT/CRITICAL 的区域不弹此窗，越限走常规事件流。
+ *   固定规则未达 ALERT（NORMAL/WATCH），且轻量 ML 判定 ANOMALY。
+ *   规则已到 ALERT/CRITICAL 的区域不弹此窗，越限走常规事件流。
  *
  * 交互（预警 → 现场取证 → 证据回传闭环）：
  *   【立即记录干预】登记轻量 Action「开启新风系统」（不创建事件），
@@ -54,8 +54,8 @@ function describeMetric(item: MetricAnomaly): string {
   const direction = item.zScore >= 0 ? '异常上升' : '异常下降'
   return (
     `${meta.label}出现${direction}（当前 ` +
-    `${formatNumber(item.value, item.digits)} ${item.unit}，规则判定正常` +
-    `（关注阈值 ${formatNumber(meta.watch, meta.digits)} ${item.unit}），` +
+    `${formatNumber(item.value, item.digits)} ${item.unit}，规则未达 ALERT` +
+    `（报警阈值 ${formatNumber(meta.alert, meta.digits)} ${item.unit}），` +
     `但远超历史均值 μ≈${formatNumber(item.mean, item.digits)} ${item.unit}，` +
     `z=${formatZScore(item.zScore)}）`
   )
@@ -137,7 +137,7 @@ export function MlAlertModal() {
       size="md"
       className="ml-alert-modal"
       title="⚠️ ML 隐患预警"
-      description="固定规则判定正常，但轻量 ML（Z-score 滑动窗口）检测到读数显著偏离历史分布 —— 规则/ML 分歧，交集从严建议提前干预。"
+      description="固定规则尚未达到 ALERT，但轻量 ML（Z-score 滑动窗口）检测到读数显著偏离历史分布，建议提前干预。"
       onClose={handleIgnore}
       footer={
         <>
@@ -174,7 +174,7 @@ export function MlAlertModal() {
           </p>
         </div>
         <Badge tone="warning" dot>
-          规则正常 · ML ANOMALY
+          规则未达 ALERT · ML ANOMALY
         </Badge>
       </div>
 

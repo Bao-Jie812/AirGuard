@@ -190,9 +190,10 @@ export function BoardChart({
  * 跟随全局选中区域，每 5 秒随 MQTT 推送更新。
  */
 export function LiveBoard({ zoneId }: { zoneId: string }) {
-  const { mqttStatus, readings, histories } = useLiveData()
+  const { mqttStatus, readings, histories, priorities } = useLiveData()
   const zone = getZone(zoneId)
   const reading = readings[zoneId]
+  const isStale = priorities.find((item) => item.zoneId === zoneId)?.summary.startsWith('STALE') ?? false
   // 大屏图表：断档断线 + 移动平均去抖；KPI 数值仍取原始最新点
   const rawRows = useMemo(
     () => toRows(histories[zoneId] ?? []),
@@ -202,7 +203,7 @@ export function LiveBoard({ zoneId }: { zoneId: string }) {
   const latest = rawRows.length > 0 ? rawRows[rawRows.length - 1] : null
   // 页面刷新后 readings 尚未恢复、但本地历史已恢复时，仍按历史快照展示，
   // 避免出现“已缓存 N 点”却显示“等待实时数据”的矛盾状态。
-  const hasLive = (reading?.receivedAt ?? 0) > 0 || rawRows.length > 0
+  const hasLive = !isStale && ((reading?.receivedAt ?? 0) > 0 || rawRows.length > 0)
 
   return (
     <section
@@ -228,9 +229,9 @@ export function LiveBoard({ zoneId }: { zoneId: string }) {
               更新于 {formatDateTimeFromMs(latest.ts)}
             </span>
           )}
-          <span className={`live-status live-status--${mqttStatus}`}>
+          <span className={`live-status live-status--${isStale ? 'offline' : mqttStatus}`}>
             <span className="live-dot" aria-hidden="true" />
-            {MQTT_STATUS_TEXT[mqttStatus]}
+            {isStale ? '数据离线 · STALE' : MQTT_STATUS_TEXT[mqttStatus]}
           </span>
         </div>
       </div>
@@ -266,8 +267,9 @@ export function LiveBoard({ zoneId }: { zoneId: string }) {
         <div className="live-board__empty">
           <span className="live-dot live-dot--waiting" aria-hidden="true" />
           <p>
-            等待实时数据 —— 运行 <code>npm run simulator</code> 启动 MQTT
-            模拟器后，此处每 5 秒绘制一个数据点。
+            {isStale
+              ? '数据离线（STALE）：超过 15 秒未收到该区域的新数据，当前值已停止展示。'
+              : <>等待实时数据 —— 运行 <code>npm run simulator</code> 启动 MQTT 模拟器后，此处每 5 秒绘制一个数据点。</>}
           </p>
         </div>
       )}

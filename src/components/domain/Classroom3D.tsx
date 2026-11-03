@@ -237,11 +237,12 @@ export default function Classroom3D({
   const seatIndexes = alert ? SEATS.map((_, i) => i) : NORMAL_SEATS
   return (
     <SceneContainer
+      denseLandscape
       alert={alert}
       status={status}
       actionType={actionType}
-      camera={[6.8, 7.6, 9]}
-      target={[0, 0.65, 0.1]}
+      camera={[7.6, 7.4, 10.8]}
+      target={[0, 0, 0]}
       fov={32}
       roomSize={[7.44, 5.9]}
       roomCenter={[0, 0.1]}

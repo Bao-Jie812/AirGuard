@@ -31,6 +31,11 @@ export const CLIENT_ID = `airguard-web-${Math.random().toString(16).slice(2, 10)
 
 let client: MqttClient | null = null
 
+function onError(error: Error) {
+  // 单例保留自动重连；注册 error 监听，避免连接错误成为未捕获异常。
+  console.error('[mqtt] connection error:', error.message)
+}
+
 export function getMqttClient(): MqttClient {
   if (!client) {
     client = mqtt.connect(MQTT_WS_URL, {
@@ -39,6 +44,7 @@ export function getMqttClient(): MqttClient {
       connectTimeout: 8000,
       clean: true,
     })
+    client.on('error', onError)
   }
   return client
 }

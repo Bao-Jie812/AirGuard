@@ -329,11 +329,12 @@ export default function Canteen3D({
   const diners = alert ? [...NORMAL_DINERS, ...ALERT_EXTRA_DINERS] : NORMAL_DINERS
   return (
     <SceneContainer
+      denseLandscape
       alert={alert}
       status={status}
       actionType={actionType}
-      camera={[7.7, 8.2, 10.7]}
-      target={[0, 0.4, 0.1]}
+      camera={[7.6, 9.2, 12.4]}
+      target={[0, 0, 0]}
       fov={32}
       roomSize={[9.64, 7.4]}
       roomCenter={[0, 0.1]}

@@ -63,10 +63,10 @@ function MetricCell({
   zoneId: string
   metric: MetricKey
   readings: Record<string, LiveSensorReading>
-  histories: Record<string, LivePoint[]>
+  histories?: Record<string, LivePoint[]>
 }) {
   const meta = METRIC_META[metric]
-  const value = metricValue(readings[zoneId], histories[zoneId], metric)
+  const value = metricValue(readings[zoneId], histories?.[zoneId], metric)
   if (value === null) {
     return <span className="priority-table__metric priority-table__metric--empty">—</span>
   }
@@ -144,6 +144,7 @@ export function PriorityTable({
       <div className="priority-table__body">
         {priorities.map((priority) => {
           const activeEvent = getActiveEventForZone(state, priority.zoneId)
+          const isStale = priority.summary.startsWith('STALE')
           // factors 为空表示尚未收到该区域的 MQTT 数据；
           // 此时不要显示误导性的 0.0 / 正常，改为显式等待状态。
           const hasData = priority.factors.length > 0
@@ -175,9 +176,11 @@ export function PriorityTable({
                   )}
                 </span>
                 <span className="priority-zone__status">
-                  {hasData
-                    ? ZONE_STATUS_LABELS[priority.zoneStatus]
-                    : '等待 MQTT 数据'}
+                  {isStale
+                    ? 'STALE · 数据离线'
+                    : hasData
+                      ? ZONE_STATUS_LABELS[priority.zoneStatus]
+                      : '等待 MQTT 数据'}
                   {activeEvent ? ' · 事件未关闭' : ''}
                 </span>
               </span>
@@ -190,7 +193,7 @@ export function PriorityTable({
                   zoneId={priority.zoneId}
                   metric="pm25"
                   readings={readings}
-                  histories={histories}
+                  histories={isStale ? undefined : histories}
                 />
               </span>
               <span className="priority-table__metric-cell">
@@ -198,7 +201,7 @@ export function PriorityTable({
                   zoneId={priority.zoneId}
                   metric="co2"
                   readings={readings}
-                  histories={histories}
+                  histories={isStale ? undefined : histories}
                 />
               </span>
               <span className="priority-table__metric-cell">
@@ -206,7 +209,7 @@ export function PriorityTable({
                   zoneId={priority.zoneId}
                   metric="crowdDensity"
                   readings={readings}
-                  histories={histories}
+                  histories={isStale ? undefined : histories}
                 />
               </span>
               <span className="priority-trend-cell">
@@ -242,9 +245,10 @@ export function PriorityMobileList({
       {priorities.map((priority) => {
         const activeEvent = getActiveEventForZone(state, priority.zoneId)
         const hasData = priority.factors.length > 0
+        const isStale = priority.summary.startsWith('STALE')
         const meta = METRIC_META[priority.primaryMetric]
         const reading = readings[priority.zoneId]
-        const history = histories[priority.zoneId]
+        const history = isStale ? undefined : histories[priority.zoneId]
         const pm25 = metricValue(reading, history, 'pm25')
         const co2 = metricValue(reading, history, 'co2')
         const crowd = metricValue(reading, history, 'crowdDensity')
@@ -268,7 +272,9 @@ export function PriorityMobileList({
                 {hasData ? `#${priority.rank}` : '—'}
               </span>
               <strong>{getZone(priority.zoneId).shortName}</strong>
-              {hasData ? (
+              {isStale ? (
+                <span className="muted">STALE · 数据离线</span>
+              ) : hasData ? (
                 <ZoneStatusBadge status={priority.zoneStatus} />
               ) : (
                 <span className="muted">等待数据</span>
@@ -298,9 +304,11 @@ export function PriorityMobileList({
             </div>
             <div className="priority-mobile__footer">
               <span>
-                {hasData
-                  ? `${meta.shortLabel} ${formatDelta(priority.primaryDelta, meta.digits)} ${meta.unit} · 1 小时`
-                  : '等待 MQTT 实时数据'}
+                {isStale
+                  ? '超过 15 秒未收到新数据'
+                  : hasData
+                    ? `${meta.shortLabel} ${formatDelta(priority.primaryDelta, meta.digits)} ${meta.unit} · 1 小时`
+                    : '等待 MQTT 实时数据'}
               </span>
               {activeEvent && (
                 <span className="priority-mobile__event">事件未关闭</span>

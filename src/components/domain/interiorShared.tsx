@@ -1,12 +1,14 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Environment, Lightformer, OrbitControls } from '@react-three/drei'
 import { Bloom, EffectComposer, N8AO, SMAA, ToneMapping } from '@react-three/postprocessing'
 import { ToneMappingMode } from 'postprocessing'
 import * as THREE from 'three'
 import type { ZoneStatus } from '../../data/types'
+import { EnvironmentProps } from './EnvironmentProps'
+import { ClassroomGarden } from './ClassroomGarden'
 
 /** 全部使用程序几何；三个房间共用状态、材质与动画，无外部模型或贴图。 */
 export type InteriorAction = 'FAN' | 'WINDOW' | null
@@ -24,8 +26,35 @@ export const FRAME_COLOR = '#cdd4d5'
 export const SKIN_COLOR = '#f2d3b8'
 export const AIRFLOW_COLOR = '#acd5e7'
 
+const RoomState = createContext({ alert: false, reducedMotion: false })
+const alarmPulse = (time: number, reduced: boolean) => reduced ? 0.7 : 0.5 + 0.5 * Math.sin(time * PI * 2 * 1.15)
+
+/** 设备本体反馈保持常驻；开关只驱动颜色和发光强度，停止后恢复原金属。 */
+function DeviceMaterial({ active, kind, color, metalness = 0.6, roughness = 0.3 }: {
+  active: boolean; kind: 'fan' | 'window'; color: string; metalness?: number; roughness?: number
+}) {
+  const material = useRef<THREE.MeshStandardMaterial>(null!)
+  const amount = useRef(0)
+  const colors = useMemo(() => ({ base: new THREE.Color(color), active: new THREE.Color(kind === 'fan' ? '#168be0' : '#f0ad48') }), [color, kind])
+  useFrame((_, delta) => {
+    amount.current = THREE.MathUtils.damp(amount.current, active ? 1 : 0, active ? 9 : 6, Math.min(delta, 0.1))
+    material.current.color.copy(colors.base).lerp(colors.active, amount.current)
+    material.current.emissiveIntensity = amount.current * (kind === 'fan' ? 1.8 : 1.5)
+    material.current.metalness = THREE.MathUtils.lerp(metalness, 0.25, amount.current)
+  })
+  return <meshStandardMaterial ref={material} name={kind === 'fan' ? 'fan-active-material' : 'window-active-material'}
+    color={color} emissive={colors.active} emissiveIntensity={0} metalness={metalness} roughness={roughness} />
+}
+
 /** 世界坐标程序纹理：跨原有地砖连续，不需要外部图片或改动 UV/顶点。 */
 function SurfaceMaterial({ color, floor }: { color: string; floor: boolean }) {
+  const material = useRef<THREE.MeshStandardMaterial>(null!)
+  const { alert, reducedMotion } = useContext(RoomState)
+  const amount = useRef(0)
+  useFrame(({ clock }, delta) => {
+    amount.current = THREE.MathUtils.damp(amount.current, alert ? 1 : 0, 5, Math.min(delta, 0.1))
+    material.current.emissiveIntensity = amount.current * (0.25 + 0.6 * alarmPulse(clock.elapsedTime, reducedMotion)) * (floor ? 0.8 : 1)
+  })
   const compile = useCallback<THREE.MeshStandardMaterial['onBeforeCompile']>((shader) => {
     shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vSurfaceWorld;')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvSurfaceWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;')
@@ -46,7 +75,7 @@ function SurfaceMaterial({ color, floor }: { color: string; floor: boolean }) {
       diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.83,0.85,0.86), grid * 0.32);` : ''}
     `)
   }, [floor])
-  return <meshStandardMaterial color={color} roughness={floor ? 0.7 : 0.86} metalness={0}
+  return <meshStandardMaterial ref={material} name={floor ? 'interior-floor-material' : 'interior-wall-material'} emissive="#ff2542" emissiveIntensity={0} color={color} roughness={floor ? 0.7 : 0.86} metalness={0}
     onBeforeCompile={compile} customProgramCacheKey={() => floor ? 'interior-grid-v3' : 'interior-wall-v3'} />
 }
 export function WallMaterial() { return <SurfaceMaterial color={WALL_COLOR} floor={false} /> }
@@ -54,8 +83,8 @@ export function FloorMaterial({ color = '#eef1f2' }: { color?: string }) {
   return <SurfaceMaterial color={color} floor />
 }
 
-export function LightRig({ alert, windowOpen = false, reducedMotion = false }: {
-  alert: boolean; windowOpen?: boolean; reducedMotion?: boolean
+export function LightRig({ alert, windowOpen = false, reducedMotion = false, wide = false }: {
+  alert: boolean; windowOpen?: boolean; reducedMotion?: boolean; wide?: boolean
 }) {
   const amb = useRef<THREE.AmbientLight>(null!)
   const hemi = useRef<THREE.HemisphereLight>(null!)
@@ -68,21 +97,21 @@ export function LightRig({ alert, windowOpen = false, reducedMotion = false }: {
     blend.current = THREE.MathUtils.damp(blend.current, alert ? 1 : 0, 5, dt)
     daylight.current = THREE.MathUtils.damp(daylight.current, windowOpen ? 1 : 0, 4, dt)
     const a = blend.current
-    // 告警只驱动局部红灯；主照明保持中性色，墙面不会整体染红。
+    // 白色主光保留；室内表面自发光与中央警报灯同步呼吸。
     const pulse = reducedMotion ? 0.7 : 0.5 + 0.5 * Math.sin(clock.elapsedTime * PI * 2 * 1.15)
-    amb.current.intensity = 0.34 + daylight.current * 0.04
-    hemi.current.intensity = 0.5
-    sun.current.intensity = 2.15 + daylight.current * 0.08
-    alarm.current.intensity = a * (1.2 + pulse * 3)
+    amb.current.intensity = 0.42 + daylight.current * 0.04
+    hemi.current.intensity = 0.6
+    sun.current.intensity = 2.05 + daylight.current * 0.08
+    alarm.current.intensity = a * (3 + pulse * 9)
   })
   return <>
-    <ambientLight name="interior-ambient" ref={amb} intensity={0.34} color="#ffffff" />
-    <hemisphereLight ref={hemi} args={['#ffffff', '#bfc7c5', 0.5]} />
-    <directionalLight name="interior-key-light" ref={sun} position={[-3, 9, 5]} color="#fffaf1" intensity={2.15} castShadow
-      shadow-mapSize={[2048, 2048]} shadow-camera-left={-8} shadow-camera-right={8}
-      shadow-camera-top={8} shadow-camera-bottom={-8} shadow-camera-near={0.5}
-      shadow-camera-far={28} shadow-bias={-0.00015} shadow-normalBias={0.025} />
-    <pointLight name="interior-alarm-light" ref={alarm} position={[0, 0.65, 0]} color="#ef5365" intensity={0} distance={3.6} decay={2} />
+    <ambientLight name="interior-ambient" ref={amb} intensity={0.42} color="#ffffff" />
+    <hemisphereLight ref={hemi} args={['#ffffff', '#bfc7c5', 0.6]} />
+    <directionalLight name="interior-key-light" ref={sun} position={[-3, 9, 5]} color="#fffaf1" intensity={2.05} castShadow
+      shadow-mapSize={[2048, 2048]} shadow-camera-left={wide ? -12 : -10} shadow-camera-right={wide ? 12 : 10}
+      shadow-camera-top={wide ? 12 : 10} shadow-camera-bottom={wide ? -12 : -10} shadow-camera-near={0.5}
+      shadow-camera-far={36} shadow-bias={-0.00015} shadow-normalBias={0.025} />
+    <pointLight name="interior-alarm-light" ref={alarm} position={[0, 1.55, 0]} color="#ff2643" intensity={0} distance={7} decay={2} />
     {/* 代码生成的反射环境，让金属与木面有高光；frames=1 不会每帧重算。 */}
     <Environment resolution={64} frames={1} environmentIntensity={0.45}>
       <color attach="background" args={['#dce3e5']} />
@@ -138,10 +167,11 @@ interface SceneContainerProps {
   roomSize?: [number, number]
   roomCenter?: [number, number]
   roomHeight?: number
+  denseLandscape?: boolean
   children: ReactNode
 }
-export function SceneContainer({ alert, status, actionType = null, camera, target = [0, 0.8, 0], fov = 30,
-  className = '', style, roomSize = [7.44, 5.9], roomCenter = [0, 0.1], roomHeight = 2.7, children }: SceneContainerProps) {
+export function SceneContainer({ alert, status, actionType = null, camera, target = [0, 0, 0], fov = 30,
+  className = '', style, roomSize = [7.44, 5.9], roomCenter = [0, 0.1], roomHeight = 2.7, denseLandscape = false, children }: SceneContainerProps) {
   const [reducedMotion, setReducedMotion] = useState(false)
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)')
@@ -151,20 +181,21 @@ export function SceneContainer({ alert, status, actionType = null, camera, targe
     return () => media.removeEventListener('change', update)
   }, [])
   return <div className={`interior-3d ${className}`} style={{
-    position: 'relative', width: '100%', height: '100%', minHeight: 200,
-    overflow: 'hidden', borderRadius: 12, background: '#F0F4F8', ...style,
+    position: 'relative', width: '100%', height: '100%', minHeight: 200, padding: 0,
+    overflow: 'hidden', borderRadius: 12, background: '#fafbfc', ...style,
   }}>
-    <Canvas flat shadows="soft" dpr={[1, 1.5]} camera={{ position: camera, fov, near: 0.1, far: 80 }}
+    <Canvas flat shadows="soft" dpr={[1, 1.5]} style={{ width: '100%', height: '100%', display: 'block' }}
+      camera={{ position: camera, fov, near: 0.1, far: 80 }}
       fallback={<div style={{ padding: 24 }}>浏览器无法显示 WebGL 场景，请开启硬件加速。</div>}>
-      <color attach="background" args={['#F0F4F8']} />
-      <LightRig alert={alert} windowOpen={actionType === 'WINDOW'} reducedMotion={reducedMotion} />
-      {children}
+      <LightRig alert={alert} windowOpen={actionType === 'WINDOW'} reducedMotion={reducedMotion} wide={denseLandscape} />
+      {denseLandscape ? <ClassroomGarden size={roomSize} center={roomCenter} /> : <EnvironmentProps size={roomSize} center={roomCenter} />}
+      <RoomState.Provider value={{ alert, reducedMotion }}>{children}</RoomState.Provider>
       <WarningEdges alert={alert} watch={status === 'WATCH'} reducedMotion={reducedMotion} size={roomSize} center={roomCenter} height={roomHeight} />
       <OrbitControls target={target} enableZoom={false} enablePan={false} enableDamping dampingFactor={0.08}
         minPolarAngle={0.55} maxPolarAngle={1.05} minAzimuthAngle={0.35} maxAzimuthAngle={0.95} />
       <EffectComposer multisampling={0} enableNormalPass={false}>
-        <N8AO aoRadius={0.3} intensity={3} distanceFalloff={0.8} color="#394542" quality="medium" />
-        <Bloom intensity={0.16} luminanceThreshold={1} luminanceSmoothing={0.3} mipmapBlur />
+        <N8AO aoRadius={0.3} intensity={2.6} distanceFalloff={0.8} color="#45504e" quality="medium" />
+        <Bloom intensity={0.24} luminanceThreshold={1} luminanceSmoothing={0.3} mipmapBlur />
         <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
         <SMAA />
       </EffectComposer>
@@ -302,9 +333,9 @@ export function WallFan({ position, rotation = [0, 0, 0], scale = 1, spinning, a
   const speed = useRef(0)
   useFrame(({ clock }, delta) => {
     const dt = Math.min(delta, 0.1)
-    speed.current = THREE.MathUtils.damp(speed.current, spinning ? 72 : 0, spinning ? 3.5 : 2.4, dt)
+    speed.current = THREE.MathUtils.damp(speed.current, spinning ? 92 : 0, spinning ? 3.5 : 2.4, dt)
     blades.current.rotation.z = (blades.current.rotation.z + speed.current * dt) % (PI * 2)
-    const power = speed.current / 72
+    const power = speed.current / 92
     blades.current.scale.setScalar(1 + Math.sin(clock.elapsedTime * 81) * 0.007 * power)
     motor.current.rotation.x = Math.sin(clock.elapsedTime * 57) * 0.003 * power
     motor.current.position.x = Math.sin(clock.elapsedTime * 63) * 0.0015 * power
@@ -318,13 +349,13 @@ export function WallFan({ position, rotation = [0, 0, 0], scale = 1, spinning, a
       </mesh>
       {[-0.08, 0.13].map(z => <mesh key={z} position={[0, 0, z]} castShadow>
         <torusGeometry args={[0.45, 0.026, 8, 48]} />
-        <meshStandardMaterial color="#b8c5cb" metalness={0.88} roughness={0.24} />
+        <DeviceMaterial active={spinning} kind="fan" color="#b8c5cb" metalness={0.88} roughness={0.24} />
       </mesh>)}
       <group ref={blades} name="fan-rotor">
         {[0, 1, 2, 3].map(i => <group key={i} rotation={[0, 0, i * PI / 2]}>
           <mesh position={[0.04, 0.23, 0]} rotation={[0.22, 0.1, -0.28]} scale={[0.105, 0.22, 0.025]} castShadow>
             <sphereGeometry args={[1, 14, 10]} />
-            <meshStandardMaterial color="#c1cbcf" metalness={0.88} roughness={0.26} />
+            <DeviceMaterial active={spinning} kind="fan" color="#c1cbcf" metalness={0.88} roughness={0.26} />
           </mesh>
         </group>)}
       </group>
@@ -343,7 +374,7 @@ export function WallFan({ position, rotation = [0, 0, 0], scale = 1, spinning, a
       </mesh>)}
       <mesh position={[0, 0, 0.14]} rotation={[PI / 2, 0, 0]} castShadow>
         <cylinderGeometry args={[0.083, 0.083, 0.09, 20]} />
-        <meshStandardMaterial color="#d2d8da" metalness={0.86} roughness={0.22} />
+        <DeviceMaterial active={spinning} kind="fan" color="#d2d8da" metalness={0.86} roughness={0.22} />
       </mesh>
     </group>
     <AirFlow active={spinning} position={[0, 0, 0.2]} length={airflowLength} radius={0.36} />
@@ -421,7 +452,7 @@ function WindowIllumination({ open, width, height, sill }: { open: boolean; widt
       material.uniforms.uOpen.value = a
       material.uniforms.uTime.value = clock.elapsedTime
     })
-    light.current.intensity = a * 10
+    light.current.intensity = a * 42
     light.current.visible = a > 0.005
     beam.current.visible = a > 0.005
     breeze.current.visible = a > 0.005
@@ -442,7 +473,7 @@ function WindowIllumination({ open, width, height, sill }: { open: boolean; widt
               vNormalView=normalMatrix*normal;gl_Position=projectionMatrix*mv;}`}
           fragmentShader={`uniform float uOpen; uniform vec3 uColor; varying vec2 vUv; varying vec3 vNormalView; varying vec3 vView;
             void main(){float along=vUv.y;float facing=pow(abs(dot(normalize(vNormalView),normalize(vView))),1.3);
-              float alpha=uOpen*0.48*(0.25+0.75*facing)*smoothstep(0.0,0.12,along)*(1.0-smoothstep(0.2,1.0,along));
+              float alpha=uOpen*0.62*(0.25+0.75*facing)*smoothstep(0.0,0.12,along)*(1.0-smoothstep(0.2,1.0,along));
               gl_FragColor=vec4(uColor,alpha);
               #include <tonemapping_fragment>
               #include <colorspace_fragment>
@@ -480,11 +511,11 @@ export function SwingWindow({ position, rotationY = 0, width = 1.15, height = 1.
   return <group name="swing-window" position={position} rotation={[0, rotationY, 0]}>
     {[sill - 0.03, sill + h + 0.03].map(y => <mesh key={y} position={[0, y, 0]} castShadow receiveShadow>
       <boxGeometry args={[w + 0.16, 0.08, 0.18]} />
-      <meshStandardMaterial color={FRAME_COLOR} metalness={0.4} roughness={0.38} />
+      <DeviceMaterial active={open} kind="window" color={FRAME_COLOR} metalness={0.4} roughness={0.38} />
     </mesh>)}
     {[-w / 2 - 0.03, w / 2 + 0.03].map(x => <mesh key={x} position={[x, sill + h / 2, 0]} castShadow>
       <boxGeometry args={[0.08, h + 0.16, 0.18]} />
-      <meshStandardMaterial color={FRAME_COLOR} metalness={0.4} roughness={0.38} />
+      <DeviceMaterial active={open} kind="window" color={FRAME_COLOR} metalness={0.4} roughness={0.38} />
     </mesh>)}
     <mesh position={[0, sill - 0.08, 0.07]} castShadow receiveShadow>
       <boxGeometry args={[w + 0.28, 0.09, 0.36]} />
@@ -499,10 +530,10 @@ export function SwingWindow({ position, rotationY = 0, width = 1.15, height = 1.
           envMapIntensity={1.2} depthWrite={false} />
       </mesh>
       {[0.025, h - 0.025].map(y => <mesh key={y} position={[w / 2, y, 0]} castShadow>
-        <boxGeometry args={[w, 0.05, 0.065]} /><meshStandardMaterial color="#c1c9ca" metalness={0.6} roughness={0.3} />
+        <boxGeometry args={[w, 0.05, 0.065]} /><DeviceMaterial active={open} kind="window" color="#c1c9ca" metalness={0.6} roughness={0.3} />
       </mesh>)}
       {[0.025, w - 0.025].map(x => <mesh key={x} position={[x, h / 2, 0]} castShadow>
-        <boxGeometry args={[0.05, h, 0.065]} /><meshStandardMaterial color="#c1c9ca" metalness={0.6} roughness={0.3} />
+        <boxGeometry args={[0.05, h, 0.065]} /><DeviceMaterial active={open} kind="window" color="#c1c9ca" metalness={0.6} roughness={0.3} />
       </mesh>)}
       <mesh position={[w - 0.1, h * 0.45, 0.055]} castShadow>
         <boxGeometry args={[0.035, 0.16, 0.045]} /><meshStandardMaterial color="#526574" metalness={0.85} roughness={0.24} />

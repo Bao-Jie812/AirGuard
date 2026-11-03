@@ -33,11 +33,12 @@ const BAR_ORDER: MetricKey[] = ['co2', 'pm25', 'crowdDensity']
 
 export function AnalysisPanel() {
   const { state } = useAppStore()
-  const { histories, readings } = useLiveData()
+  const { histories, readings, priorities } = useLiveData()
   const { selectedZoneId } = useSelectedZone()
   const { toast } = useToast()
   const [keyword, setKeyword] = useState('')
   const zone = getZone(selectedZoneId)
+  const isStale = priorities.find((item) => item.zoneId === selectedZoneId)?.summary.startsWith('STALE') ?? false
   // MQTT 实时读数：驱动底部「实时环境指标」进度条
   const reading = readings[selectedZoneId]
 
@@ -169,7 +170,7 @@ export function AnalysisPanel() {
       <section className="card analysis-card">
         <header className="analysis-card__head">
           <h3>{zone.shortName} · 空气质量趋势</h3>
-          <span className="analysis-tag">PM2.5 实时</span>
+          <span className="analysis-tag">{isStale ? 'STALE · 历史数据' : 'PM2.5 实时'}</span>
         </header>
         {hasTrend ? (
           <>
@@ -226,7 +227,7 @@ export function AnalysisPanel() {
             <div className="analysis-legend">
               <span>
                 <i style={{ background: '#0d9b86' }} />
-                MQTT 实时序列（5 秒粒度）
+                {isStale ? '历史序列（当前数据离线）' : 'MQTT 实时序列（5 秒粒度）'}
               </span>
             </div>
           </>
@@ -243,7 +244,7 @@ export function AnalysisPanel() {
       <section className="card analysis-card analysis-card--stretch">
         <header className="analysis-card__head">
           <h3>{zone.shortName} · 实时环境指标</h3>
-          <span className="analysis-tag">MQTT 实时</span>
+          <span className="analysis-tag">{isStale ? 'STALE · 数据离线' : 'MQTT 实时'}</span>
         </header>
         <div className="metric-bars">
           {BAR_ORDER.map((key) => {

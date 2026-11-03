@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, Minus } from 'lucide-react'
 import { getZone, ZONES } from '../../data/zones'
-import { ZONE_STATUS_LABELS } from '../../domain/constants'
+import { ZONE_STATUS_COLORS, ZONE_STATUS_LABELS } from '../../domain/constants'
 import { formatNumber } from '../../domain/format'
 import { effectiveZoneStatus } from '../../domain/priority'
 import { useAppStore } from '../../state/AppStore'
@@ -22,36 +22,52 @@ export function useDeviceAlarmStats() {
   const { state } = useAppStore()
   const activeEvents = getActiveEvents(state)
   const total = ZONES.length
-  // 与 2D/3D 地图同一口径：未关闭事件把区域顶入高告警（OPEN=严重、处置中=警戒），
-  // 即使瞬时指标已回落也计入——否则地图全红时这里仍显示「0 个区域高告警」。
-  const high = priorities.filter((item) => {
-    const status = effectiveZoneStatus(
+  const rows = priorities.map((item) => ({
+    item,
+    status: effectiveZoneStatus(
       item.zoneStatus,
       activeEvents.filter((event) => event.zoneId === item.zoneId),
-    )
-    return status === 'ALERT' || status === 'CRITICAL'
-  }).length
-  return { total, high }
+    ),
+  }))
+  // 高告警只对应真实危险：指标已达 ALERT/CRITICAL，或 Priority 达到危险分数线。
+  // 读数回落后仅剩未关闭事件的区域仍显示“警戒”，但只计入“需警戒”，不再夸大为高告警。
+  const high = rows.filter(({ item }) =>
+    item.score >= 50 || item.zoneStatus === 'ALERT' || item.zoneStatus === 'CRITICAL',
+  ).length
+  const warning = rows.filter(({ item, status }) =>
+    item.score < 50 &&
+    item.zoneStatus !== 'ALERT' &&
+    item.zoneStatus !== 'CRITICAL' &&
+    status !== 'NORMAL',
+  ).length
+  return { total, high, warning }
 }
 
 export function DeviceAlarmSlider() {
-  const { total, high } = useDeviceAlarmStats()
-  const ratio = Math.min(0.96, Math.max(0.04, high / (total || 1)))
+  const { total, high, warning } = useDeviceAlarmStats()
+  const count = high > 0 ? high : warning
+  const label = high > 0 ? '高告警' : warning > 0 ? '需警戒' : '高告警'
+  const color = high > 0
+    ? ZONE_STATUS_COLORS.CRITICAL
+    : warning > 0
+      ? ZONE_STATUS_COLORS.ALERT
+      : ZONE_STATUS_COLORS.NORMAL
+  const ratio = Math.min(0.96, Math.max(0.04, count / (total || 1)))
 
   return (
-    <div className="alarm-slider" role="img" aria-label={`${high} 个区域处于高告警`}>
+    <div className="alarm-slider" role="img" aria-label={`${count} 个区域${label}`}>
       <span className="alarm-slider__tip" style={{ left: `${ratio * 100}%` }}>
-        {high} 个区域高告警
+        {count} 个区域{label}
       </span>
       <div className="alarm-slider__track">
         <span
           className="alarm-slider__marker"
-          style={{ left: `${ratio * 100}%` }}
+          style={{ left: `${ratio * 100}%`, borderColor: color }}
         />
       </div>
       <div className="alarm-slider__scale">
         <span>正常</span>
-        <span>高告警</span>
+        <span>{label}</span>
       </div>
     </div>
   )
@@ -66,9 +82,11 @@ export function AlarmHistoryTable() {
       .slice(-12)
       .map((point) => point.pm25)
     const reading = readings[item.zoneId]
-    // 刷新后 readings 可能尚未恢复，用同一份 MQTT 历史的最新点兜底
-    const latest =
-      reading?.pm25 ?? (tail.length > 0 ? tail[tail.length - 1] : null)
+    const isStale = item.summary.startsWith('STALE')
+    // 离线时不再用历史最后一点冒充当前值；在线但 readings 尚未恢复时才用历史兜底。
+    const latest = isStale
+      ? null
+      : reading?.pm25 ?? (tail.length > 0 ? tail[tail.length - 1] : null)
     const previous = tail.length >= 2 ? tail[tail.length - 2] : null
     const rising =
       latest !== null && previous !== null
@@ -82,6 +100,7 @@ export function AlarmHistoryTable() {
       zoneId: item.zoneId,
       name: zone.shortName,
       status: item.zoneStatus,
+      isStale,
       latest,
       rising,
       tail,
@@ -107,12 +126,12 @@ export function AlarmHistoryTable() {
                   <span
                     className="alarm-table__dot"
                     style={{ background: TREND_COLOR[row.status] }}
-                    title={ZONE_STATUS_LABELS[row.status]}
+                    title={row.isStale ? 'STALE · 数据离线' : ZONE_STATUS_LABELS[row.status]}
                   />
                   {row.name}
                 </span>
               </td>
-              <td>{ZONE_STATUS_LABELS[row.status]}</td>
+              <td>{row.isStale ? 'STALE · 数据离线' : ZONE_STATUS_LABELS[row.status]}</td>
               <td>
                 <span className="alarm-table__count">
                   {row.latest === null ? '—' : formatNumber(row.latest)}

@@ -315,12 +315,13 @@ export default function Dorm3D({
   const fanActive = actionType === 'FAN'
   return (
     <SceneContainer
+      denseLandscape
       alert={alertOf(status)}
       status={status}
       actionType={actionType}
-      camera={[5.9, 5.5, 7.5]}
-      target={[0, 0.45, 0.1]}
-      fov={34}
+      camera={[7.6, 7.4, 10.8]}
+      target={[0, 0, 0]}
+      fov={32}
       roomSize={[6.3, 5.2]}
       roomCenter={[0, 0.05]}
       roomHeight={2.8}

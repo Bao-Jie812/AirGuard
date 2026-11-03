@@ -129,10 +129,10 @@ function zScoreOf(
 export function assessZoneAnomaly(
   zoneId: string,
   history: AnomalySeriesPoint[],
+  minSamples = ANOMALY_MIN_SAMPLES,
 ): MlAnomalyAssessment {
   const windowSize = ANOMALY_WINDOW_SIZE
   const zThreshold = ANOMALY_Z_THRESHOLD
-  const minSamples = ANOMALY_MIN_SAMPLES
   const current = history[history.length - 1]
   const baseline = current ? history.slice(-(windowSize + 1), -1) : []
 

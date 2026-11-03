@@ -550,7 +550,7 @@ const SCENE_LABELS:Record<SceneKey,string>={
  * 「处理中」状态由事件 HANDLING 数据驱动而非本地假状态。
  */
 function ZoneDetailPanel({zoneId,onClose}:{zoneId:CoreZoneId;onClose:()=>void}) {
-  const {readings,priorities,mqttStatus,publishDisposition,publishControl}=useLiveData()
+  const {readings,priorities,mqttStatus,publishDisposition,publishControl,mlAlert,mlInterventions}=useLiveData()
   const {state,recordAction}=useAppStore()
   const {toast}=useToast()
   // 冷却：防止 1.2s 内重复点击刷出多条 Action 记录
@@ -564,23 +564,45 @@ function ZoneDetailPanel({zoneId,onClose}:{zoneId:CoreZoneId;onClose:()=>void}) 
   const zone=getZone(zoneId)
   const Scene3D=ZONE_SCENES[zoneId]
   const reading=readings[zoneId]
-  const zoneStatus=priorities.find(item=>item.zoneId===zoneId)?.zoneStatus??'NORMAL'
+  const assessedPriority=priorities.find(item=>item.zoneId===zoneId)
+  const assessedZoneStatus=assessedPriority?.zoneStatus??'NORMAL'
+  const isStale=assessedPriority?.summary.startsWith('STALE')??false
+  // 指标卡与规则状态以同一条实时读数为准；历史评估只作为读数尚未到达时的兜底。
+  const zoneStatus=reading?.status??assessedZoneStatus
   const activeEvent=getActiveEventForZone(state,zoneId)
+  const hasActiveEvent=activeEvent!=null
   const handling=Boolean(activeEvent&&activeEvent.status!=='OPEN')
-  const isAbnormal=zoneStatus!=='NORMAL'||activeEvent!=null
+  const dataAlarming=zoneStatus==='ALERT'||zoneStatus==='CRITICAL'
+  const mlOnly=!hasActiveEvent&&zoneStatus==='NORMAL'&&(
+    mlAlert?.zoneId===zoneId||mlInterventions.some(item=>item.zoneId===zoneId)
+  )
+  const needsAttention=zoneStatus!=='NORMAL'||hasActiveEvent||mlOnly
+  const readingsRecovered=hasActiveEvent&&reading!=null&&zoneStatus==='NORMAL'
+  // 数据仍越限才使用红色告警；读数回落后的事件与 ML-only 隐患仅保留橙色关注。
+  const sceneStatus:ZoneStatus=dataAlarming
+    ?effectiveZoneStatus(zoneStatus,activeEvent?[activeEvent]:[])
+    :hasActiveEvent||mlOnly||zoneStatus==='WATCH'?'WATCH':'NORMAL'
   const latestAction=activeEvent
     ?state.actions.filter(item=>item.eventId===activeEvent.eventId).at(-1)
     :undefined
-  const badgeText=activeEvent?EVENT_STATUS_LABELS[activeEvent.status]:ZONE_STATUS_LABELS[zoneStatus]
+  const badgeText=activeEvent?EVENT_STATUS_LABELS[activeEvent.status]:isStale?'数据离线 · STALE':mlOnly?'ML 隐患待复核':ZONE_STATUS_LABELS[zoneStatus]
   const badgeColor=activeEvent
     ?activeEvent.status==='OPEN'?ZONE_STATUS_COLORS.CRITICAL:ZONE_STATUS_COLORS.ALERT
-    :ZONE_STATUS_COLORS[zoneStatus]
+    :ZONE_STATUS_COLORS[mlOnly?'WATCH':zoneStatus]
   // 场景优先级：处置画面（仅当触发时的事件上下文仍有效）> 异常 > 正常
-  const sceneKey:SceneKey=sceneOverride&&isAbnormal&&sceneOverride.eventId===(activeEvent?.eventId??null)
+  const sceneKey:SceneKey=sceneOverride&&needsAttention&&sceneOverride.eventId===(activeEvent?.eventId??null)
     ?sceneOverride.scene
-    :(isAbnormal?'alert':'normal')
+    :(needsAttention?'alert':'normal')
   // 3D 场景动作映射：fan→排风扇/空调冷气流；window→玻璃窗向外旋开
   const sceneAction:InteriorAction=sceneKey==='fan'?'FAN':sceneKey==='window'?'WINDOW':null
+  const sceneLabel=sceneKey==='fan'||sceneKey==='window'
+    ?SCENE_LABELS[sceneKey]
+    :isStale?'数据离线 · STALE'
+    :readingsRecovered?'读数恢复 · 事件验证中'
+    :mlOnly?'ML 隐患 · 待人工复核'
+    :hasActiveEvent||dataAlarming?SCENE_LABELS.alert
+    :zoneStatus==='WATCH'?'指标关注 · 持续监测'
+    :SCENE_LABELS.normal
 
   // Esc 关闭面板
   useEffect(()=>{
@@ -647,10 +669,10 @@ function ZoneDetailPanel({zoneId,onClose}:{zoneId:CoreZoneId;onClose:()=>void}) 
       </div>
       {/* 内部实景模拟：按区域渲染对应 3D 场景（教室/食堂/宿舍），灯光与人物随状态切换，处置动作播放排风/开窗动画 */}
       <div className="zone-panel__scene">
-        <Scene3D status={isAbnormal?'ALERT':'NORMAL'} actionType={sceneAction}
+        <Scene3D status={sceneStatus} actionType={sceneAction}
           style={{minHeight:0,borderRadius:0}}/>
-        <span className="zone-panel__scene-live"><i/>LIVE · 内部实景</span>
-        <span className="zone-panel__scene-label">{SCENE_LABELS[sceneKey]}</span>
+        <span className="zone-panel__scene-live"><i/>{isStale?'STALE · 数据离线':'LIVE · 内部实景'}</span>
+        <span className="zone-panel__scene-label">{sceneLabel}</span>
         <div className="zone-panel__scene-metrics">
           {metrics.map(({key,value,icon:Icon})=>{
             const meta=METRIC_META[key]
@@ -663,17 +685,29 @@ function ZoneDetailPanel({zoneId,onClose}:{zoneId:CoreZoneId;onClose:()=>void}) 
           })}
         </div>
       </div>
-      {isAbnormal?(
+      {readingsRecovered&&activeEvent?(
+        <div className="zone-panel__recovery-notice" role="status">
+          <strong>当前读数已恢复正常，但该事件仍在处置验证中</strong>
+          <span>{activeEvent.status==='OPEN'
+            ?'请点击下方【记录处置】登记 Action，进入 Recovery 连续达标验证。'
+            :'系统正在采集 Action 后的连续达标样本，满足恢复规则后将自动关闭事件。'}</span>
+        </div>
+      ):null}
+      {isStale&&!hasActiveEvent?(
+        <div className="zone-panel__ml-note">STALE · 数据离线：超过 15 秒未收到新数据，旧读数已停止作为当前状态展示。</div>
+      ):hasActiveEvent||zoneStatus!=='NORMAL'?(
         <div className="zone-panel__ops">
           <div className="zone-panel__ops-head">
             <AlertTriangle size={13}/>
-            {handling?'处置进行中 · 可追加指令':'检测到异常指标 · 建议立即处置'}
+            {readingsRecovered
+              ?activeEvent?.status==='OPEN'?'读数已回落 · 请记录处置启动 Recovery 验证':'Recovery 验证中 · 等待连续达标样本'
+              :handling?'处置进行中 · 可追加指令':'检测到异常指标 · 建议立即处置'}
           </div>
           <div className="zone-panel__actions">
             {PANEL_ACTIONS.map(option=><button key={option.type} type="button" disabled={cooldown}
               onClick={()=>dispatchAction(option.type)} title={option.hint}>
               <option.icon size={15}/>
-              <span><strong>{option.label}</strong><small>{option.hint}</small></span>
+              <span><strong>{readingsRecovered&&activeEvent?.status==='OPEN'?`记录处置 · ${option.label}`:option.label}</strong><small>{option.hint}</small></span>
             </button>)}
           </div>
           {handling&&activeEvent?(
@@ -687,6 +721,8 @@ function ZoneDetailPanel({zoneId,onClose}:{zoneId:CoreZoneId;onClose:()=>void}) 
             </div>
           ):null}
         </div>
+      ):mlOnly?(
+        <div className="zone-panel__ml-note">当前读数未越规则阈值；ML 仅提示潜在隐患，请在隐患预警中人工复核或记录干预。</div>
       ):(
         <div className="zone-panel__ok">各项指标处于正常范围，无需处置操作。</div>
       )}
@@ -786,6 +822,8 @@ const CSS=`
 .zone-panel__chip b{font-variant-numeric:tabular-nums;font-weight:600;font-size:12.5px}
 .zone-panel__chip small{font-size:9.5px;color:#7f958f}
 .zone-panel__ops-head{display:flex;align-items:center;gap:6px;font-size:12px;color:#c98a1e;margin-bottom:10px;letter-spacing:.5px}
+.zone-panel__recovery-notice{display:grid;gap:3px;margin-bottom:10px;padding:9px 12px;border:1px solid #eedcae;border-radius:8px;background:#fff8e8;color:#9a6b12;font-size:11.5px;line-height:1.5}
+.zone-panel__recovery-notice strong{font-size:12px;font-weight:600}.zone-panel__ml-note{padding:10px 12px;border:1px solid #ded5f4;border-radius:8px;background:#f6f2ff;color:#705b9e;font-size:12px;line-height:1.55}
 .zone-panel__actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .zone-panel__actions button{display:flex;align-items:center;gap:10px;text-align:left;padding:11px 13px;border-radius:10px;border:1px solid #cfdeda;background:linear-gradient(150deg,#ffffff,#f2f7f5);color:#16302b;cursor:pointer;transition:transform .15s,box-shadow .15s,border-color .15s}
 .zone-panel__actions button:hover:not(:disabled){transform:translateY(-1px);border-color:#0d9b86;box-shadow:0 6px 16px rgba(13,155,134,.18)}

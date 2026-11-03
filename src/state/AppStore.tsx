@@ -445,7 +445,9 @@ export function AppStoreProvider({ children }: { children: ReactNode }) {
       const handling = next.events.filter(
         (event) =>
           event.zoneId === reading.zoneId &&
-          (event.status === 'HANDLING' || event.status === 'STILL_HANDLING'),
+          (event.status === 'HANDLING' ||
+            event.status === 'STILL_HANDLING' ||
+            event.status === 'INSUFFICIENT_EVIDENCE'),
       )
       if (handling.length === 0) return next
 

@@ -220,6 +220,10 @@ interface LiveDataValue {
   mlAlert: MlHiddenAlert | null
   /** 关掉预警（忽略 / 前往查看 / 记录干预 / ESC / 点遮罩）：该区域 3 分钟内不再重复弹窗 */
   dismissMlAlert: (zoneId: string) => void
+  /** 新演示开始前清除旧的 ML 静默期与干预标记，确保立即重新评估。 */
+  resetMlAlertForDemo: (zoneId: string) => void
+  /** 演示计时结束后展示基于触发前基线计算的 ML 预警。 */
+  showDemoMlAlert: (alert: MlHiddenAlert) => void
   /** 未解除的 ML 隐患干预记录（轻量 Action，不关联事件，仅当前会话） */
   mlInterventions: MlIntervention[]
   /**
@@ -465,6 +469,8 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
   // 预警防抖表：zoneId → 该时间点之前不再弹窗；用 ref 避免触发重渲染，
   // 初始值从 localStorage 恢复，刷新页面不突破已有静默期
   const mlAlertSnoozeRef = useRef<Record<string, number>>(loadMlAlertSnooze())
+  // 演示按钮触发后的三秒内，由演示计时器独占弹窗时机。
+  const demoMlDelayUntilRef = useRef<Record<string, number>>({})
   // 手动演示模式窗口表：zoneId → 手动模式截止时间（收到 isManual 读数时刷新）
   const manualModeUntilRef = useRef<Record<string, number>>({})
   // 自动数据分歧的控制台记录节流：同一区域一轮分歧只记录一次
@@ -915,11 +921,12 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     // 阶段二：新隐患检测（仅 规则 NORMAL + ML ANOMALY + 手动演示模式）
     let candidate: MlHiddenAlert | null = null
     for (const scan of scans) {
+      if ((demoMlDelayUntilRef.current[scan.zoneId] ?? 0) > now) continue
       // 分歧解除后重置控制台节流标记，下一轮分歧可再记录
       if (scan.ml?.verdict !== 'ANOMALY') {
         autoAnomalyLoggedRef.current[scan.zoneId] = false
       }
-      if (scan.ruleStatus !== 'NORMAL') continue
+      if (scan.ruleStatus !== 'NORMAL' && scan.ruleStatus !== 'WATCH') continue
       if (!scan.ml || scan.ml.verdict !== 'ANOMALY') continue
       // 手动演示闸门：仅该区域 60s 窗口内收到过 isManual:true 读数才弹窗。
       // simulator 自动数据的分歧一律不弹，控制台记录一次（防刷屏）。
@@ -957,7 +964,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     // 否则手动注入触发后 5 秒内弹窗就被自动数据冲掉，无法完成演示。
     const isTriggering = (zoneId: string): boolean => {
       const scan = scans.find((entry) => entry.zoneId === zoneId)
-      if (!scan || scan.ruleStatus !== 'NORMAL') return false
+      if (!scan || (scan.ruleStatus !== 'NORMAL' && scan.ruleStatus !== 'WATCH')) return false
       if (scan.ml?.verdict === 'ANOMALY') return true
       return (manualModeUntilRef.current[zoneId] ?? 0) > now
     }
@@ -980,7 +987,22 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
     })
   }, [histories, priorities, mlInterventions])
 
-  const dismissMlAlert = useCallback((zoneId: string) => {
+  const resetMlAlertForDemo = useCallback((zoneId: string) => {
+    demoMlDelayUntilRef.current[zoneId] = Date.now() + 3_000
+    delete mlAlertSnoozeRef.current[zoneId]
+    saveMlAlertSnooze(mlAlertSnoozeRef.current)
+    setMlAlert((previous) =>
+      previous && previous.zoneId === zoneId ? null : previous,
+    )
+    setMlInterventions((previous) => previous.filter((item) => item.zoneId !== zoneId))
+  }, [])
+
+  const showDemoMlAlert = useCallback((alert: MlHiddenAlert) => {
+    demoMlDelayUntilRef.current[alert.zoneId] = 0
+    setMlAlert(alert)
+  }, [])
+
+  const suppressMlAlert = useCallback((zoneId: string) => {
     mlAlertSnoozeRef.current[zoneId] = Date.now() + ML_ALERT_SNOOZE_MS
     // 持久化防抖表：刷新页面后静默期仍然有效
     saveMlAlertSnooze(mlAlertSnoozeRef.current)
@@ -988,6 +1010,18 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       previous && previous.zoneId === zoneId ? null : previous,
     )
   }, [])
+
+  const dismissMlAlert = useCallback((zoneId: string) => {
+    suppressMlAlert(zoneId)
+    // 只有用户明确忽略后，simulator 才开始五秒恶化计时。
+    publishControl({
+      action: 'ESCALATE_AFTER_IGNORE',
+      zoneId,
+      isManual: true,
+      at: new Date().toISOString(),
+      clientId: CLIENT_ID,
+    })
+  }, [publishControl, suppressMlAlert])
 
   const recordMlIntervention = useCallback(
     (zoneId: string, metrics: MetricAnomaly[], maxAbsZ: number) => {
@@ -1010,7 +1044,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
         intervention,
       ])
       // 关闭弹窗；干预期间由 mlInterventions 抑制再弹，snooze 做双保险
-      dismissMlAlert(zoneId)
+      suppressMlAlert(zoneId)
       // 联动演戏：通知模拟器进入恢复模式，读数平滑回落 → Z-score 回归 → 自动解除
       publishControl({
         action: 'START_RECOVERY',
@@ -1020,7 +1054,7 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
         source: 'ML_HIDDEN_ALERT',
       })
     },
-    [dismissMlAlert, publishControl],
+    [suppressMlAlert, publishControl],
   )
 
   // 当前首要关注 = 实时 Priority #1。
@@ -1043,6 +1077,8 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       addManualObservation,
       mlAlert,
       dismissMlAlert,
+      resetMlAlertForDemo,
+      showDemoMlAlert,
       mlInterventions,
       recordMlIntervention,
       clearLiveData,
@@ -1061,6 +1097,8 @@ export function LiveDataProvider({ children }: { children: ReactNode }) {
       addManualObservation,
       mlAlert,
       dismissMlAlert,
+      resetMlAlertForDemo,
+      showDemoMlAlert,
       mlInterventions,
       recordMlIntervention,
       clearLiveData,
